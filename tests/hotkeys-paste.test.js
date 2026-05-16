@@ -186,6 +186,47 @@ describe('Ctrl+V paste hotkey', () => {
     expect(sentMessages).toEqual([]);
   });
 
+  it('synthesized Ctrl+V (empty e.code, populated e.key) still triggers paste', async () => {
+    // TypeWhisper and similar Windows dictation tools push transcribed
+    // text via SendInput, which produces KeyboardEvents whose e.code is
+    // an empty string or 'Unidentified' while e.key carries the
+    // letter ('v'). normalizeEvent must fall back to e.key for the
+    // hotkey match — otherwise the dispatch returns true, xterm.js
+    // forwards Ctrl+V to the PTY as raw 0x16 (^V), and dictation tools
+    // appear silently broken from the user's side.
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      code: '', // synthesized — no physical scan code
+      key: 'v',
+      ctrlKey: true,
+      bubbles: true,
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sentMessages).toEqual([
+      { type: 'input', id: 'sess-1', data: 'pasted text' },
+    ]);
+  });
+
+  it('synthesized Ctrl+V with Unidentified code also matches', async () => {
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {
+      code: 'Unidentified',
+      key: 'V', // some synthesizers send the shifted form
+      ctrlKey: true,
+      bubbles: true,
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sentMessages).toEqual([
+      { type: 'input', id: 'sess-1', data: 'pasted text' },
+    ]);
+  });
+
   it('multi-line clipboard content is sent as a single input payload', async () => {
     const { state, sentMessages } = await loadFreshTerminals();
     state.active = 'sess-1';

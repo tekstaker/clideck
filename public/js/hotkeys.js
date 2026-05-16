@@ -5,13 +5,42 @@ import { handleTerminalKey } from './prompts.js';
 
 const registry = new Map(); // normalized combo → { pluginId, callback }
 
-// Normalize a KeyboardEvent into a canonical combo string
+// Normalize a KeyboardEvent into a canonical combo string.
+//
+// Prefers e.code (physical key, layout-independent — e.g. 'KeyV'), which is
+// what real keypresses provide. Synthesized events from OS-level tools that
+// use SendInput (Windows dictation tools, AutoHotkey, etc.) sometimes ship
+// with an empty or 'Unidentified' code, but a populated e.key ('v', 'V', or
+// a named key). Fall back to deriving the canonical token from e.key so
+// hotkeys match for synthesized keystrokes too.
 function normalizeEvent(e) {
   const parts = [];
   if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
   if (e.altKey) parts.push('Alt');
   if (e.shiftKey) parts.push('Shift');
-  parts.push(e.code);
+
+  let key = e.code;
+  if (!key || key === 'Unidentified') {
+    if (e.key && e.key.length === 1) {
+      // Letters: 'v' / 'V' → 'KeyV'. Digits also work but we don't bind
+      // any, so the mapping is intentionally letter-shaped.
+      key = /^[a-z]$/i.test(e.key) ? 'Key' + e.key.toUpperCase() : e.key;
+    } else if (e.key) {
+      key = e.key; // 'Enter', 'Escape', 'F4', etc.
+    }
+  }
+
+  // Optional diagnostic — enable in DevTools with `window.__logHotkeys = true`
+  // and reproduce the gesture to see what the browser reports for each event.
+  if (typeof window !== 'undefined' && window.__logHotkeys) {
+    console.log('[hotkeys] keydown', {
+      code: e.code, key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey,
+      altKey: e.altKey, shiftKey: e.shiftKey, isTrusted: e.isTrusted,
+      normalized: [...parts, key].join('+'),
+    });
+  }
+
+  parts.push(key);
   return parts.join('+');
 }
 
