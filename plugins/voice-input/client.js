@@ -120,7 +120,19 @@ function cancelRecording() {
 
 let currentHotkey = null;
 
+function unbindHotkey() {
+  if (!currentHotkey) return;
+  _api.unregisterHotkey(currentHotkey);
+  currentHotkey = null;
+}
+
 function bindHotkey() {
+  // When the plugin is disabled, fully release the hotkey so the keypress
+  // reaches the OS — otherwise dispatch() still preventDefaults it and
+  // the callback no-ops silently, stealing the key from dictation tools
+  // and OS-level shortcuts.
+  if (!settings.enabled) { unbindHotkey(); return; }
+
   const code = settings.hotkey || 'F4';
   if (code === currentHotkey) return;
   const cb = () => {

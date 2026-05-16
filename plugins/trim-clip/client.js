@@ -21,6 +21,12 @@ async function trimAndCopy() {
   }
 }
 
+function unbindHotkey() {
+  if (!currentHotkey) return;
+  apiRef.unregisterHotkey(currentHotkey);
+  currentHotkey = null;
+}
+
 function bindHotkey(hotkey) {
   const next = hotkey || 'F8';
   if (next === currentHotkey) return;
@@ -41,7 +47,12 @@ export function init(api) {
   api.onMessage('settings', (msg) => {
     enabled = msg.enabled !== false;
     if (btnEl) btnEl.style.display = enabled ? '' : 'none';
-    bindHotkey(msg.hotkey || 'F8');
+    // When the plugin is disabled, fully release the hotkey so the
+    // keypress reaches the OS — otherwise dispatch() still preventDefaults
+    // it and the trim callback no-ops silently, stealing the key from
+    // dictation tools and OS-level shortcuts.
+    if (enabled) bindHotkey(msg.hotkey || 'F8');
+    else unbindHotkey();
   });
   api.send('getSettings');
 
