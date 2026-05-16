@@ -135,6 +135,70 @@ describe('Ctrl+V paste hotkey', () => {
     expect(sentMessages).toEqual([]);
   });
 
+  it('Ctrl+V inside a contentEditable element is not intercepted', async () => {
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    document.body.appendChild(editor);
+
+    const { event } = dispatchKey(editor, {
+      code: 'KeyV',
+      ctrlKey: true,
+      cancelable: true,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(sentMessages).toEqual([]);
+  });
+
+  it('empty clipboard does not push anything to the PTY', async () => {
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+    setClipboardText('');
+
+    dispatchKey(document.body, { code: 'KeyV', ctrlKey: true });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sentMessages).toEqual([]);
+  });
+
+  it('rejected clipboard read does not throw out of the dispatcher', async () => {
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: vi.fn(async () => {
+          throw new Error('clipboard access denied');
+        }),
+      },
+    });
+
+    expect(() => {
+      dispatchKey(document.body, { code: 'KeyV', ctrlKey: true });
+    }).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sentMessages).toEqual([]);
+  });
+
+  it('multi-line clipboard content is sent as a single input payload', async () => {
+    const { state, sentMessages } = await loadFreshTerminals();
+    state.active = 'sess-1';
+    setClipboardText('first line\nsecond line\nthird line');
+
+    dispatchKey(document.body, { code: 'KeyV', ctrlKey: true });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(sentMessages).toEqual([
+      { type: 'input', id: 'sess-1', data: 'first line\nsecond line\nthird line' },
+    ]);
+  });
+
   it('Ctrl+Shift+K still clears the active terminal (no regression)', async () => {
     const { state } = await loadFreshTerminals();
     const clear = vi.fn();
