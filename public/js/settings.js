@@ -94,6 +94,11 @@ export function updateVersionFooter() {
   if (el) el.textContent = state.cfg.version || '';
   const remoteEl = document.getElementById('version-remote');
   if (remoteEl) remoteEl.textContent = state.remoteVersion || '';
+  // Always-visible build tag in the lower-left corner. Lives outside
+  // any panel so a quick glance confirms which build is running without
+  // opening Settings.
+  const tagEl = document.getElementById('app-version-tag');
+  if (tagEl) tagEl.textContent = state.cfg.version ? `v${state.cfg.version}` : '';
 }
 
 // ── CLI Agents ──
