@@ -1349,3 +1349,14 @@ const clearTerminal = () => {
 };
 registerHotkey('core', 'Cmd+K', clearTerminal);
 registerHotkey('core', 'Ctrl+Shift+K', clearTerminal);
+
+// Paste clipboard into active terminal — Ctrl+V (Windows/Linux), Cmd+V (macOS).
+// xterm.js doesn't bind Ctrl+V by default; without this it falls through to
+// the PTY as raw ^V (0x16) and does nothing, which also breaks dictation
+// tools that synthesize Ctrl+V to deliver transcribed text. Right-click
+// Paste and Shift+Insert already work; this brings the conventional
+// shortcut into line.
+const pasteActive = () => {
+  if (state.active) pasteIntoTerminal(state.active);
+};
+registerHotkey('core', 'Ctrl+V', pasteActive);
