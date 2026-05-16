@@ -463,21 +463,42 @@ function renderNotifications() {
   document.getElementById('cfg-notify-min-work').value = state.cfg.notifyMinWork ?? 0;
 
   const permStatus = document.getElementById('notify-permission-status');
-  if (enabled && 'Notification' in window) {
+  const platformHint = document.getElementById('notify-platform-hint');
+  const testBtn = document.getElementById('notify-test');
+  const testResult = document.getElementById('notify-test-result');
+  const supported = 'Notification' in window;
+
+  // Reset all status elements; the active branch below shows what applies.
+  permStatus.classList.add('hidden');
+  platformHint.classList.add('hidden');
+  testBtn.classList.add('hidden');
+  testResult.classList.add('hidden');
+
+  if (enabled && !supported) {
+    // The Notification constructor is not defined at all — most often
+    // iOS Safari in a regular tab (web notifications only work after
+    // "Add to Home Screen" PWA install on iOS 16.4+), or older browsers.
+    permStatus.textContent = 'Not supported on this browser';
+    permStatus.className = 'text-[11px] ml-auto text-red-400';
+    permStatus.classList.remove('hidden');
+    platformHint.textContent = 'On iOS Safari, install clideck as a PWA via Share → Add to Home Screen, then re-open from the home screen icon. Android Chrome should work over HTTPS.';
+    platformHint.classList.remove('hidden');
+  } else if (enabled && supported) {
     const perm = Notification.permission;
     permStatus.classList.remove('hidden');
     if (perm === 'granted') {
       permStatus.textContent = 'Enabled';
       permStatus.className = 'text-[11px] ml-auto text-emerald-500';
+      testBtn.classList.remove('hidden');
     } else if (perm === 'denied') {
       permStatus.textContent = 'Blocked — check browser site settings';
       permStatus.className = 'text-[11px] ml-auto text-red-400';
+      platformHint.textContent = 'You previously dismissed the prompt. Open the site settings (lock icon in the URL bar on mobile) and switch Notifications to Allow, then reload.';
+      platformHint.classList.remove('hidden');
     } else {
       permStatus.textContent = 'Permission pending — toggle to re-prompt';
       permStatus.className = 'text-[11px] ml-auto text-yellow-500';
     }
-  } else {
-    permStatus.classList.add('hidden');
   }
 
   const soundEnabled = state.cfg.notifySoundEnabled !== false;
@@ -495,6 +516,26 @@ document.getElementById('cfg-notify-idle').addEventListener('change', (e) => {
 });
 
 document.getElementById('cfg-notify-min-work').addEventListener('change', saveConfig);
+
+document.getElementById('notify-test').addEventListener('click', () => {
+  const testResult = document.getElementById('notify-test-result');
+  testResult.classList.remove('hidden');
+  if (!('Notification' in window) || Notification.permission !== 'granted') {
+    testResult.textContent = 'Permission not granted yet — toggle the checkbox above first.';
+    return;
+  }
+  try {
+    const n = new Notification('clideck test', {
+      body: 'If you can see this, idle notifications will work too.',
+      icon: '/img/clideck-logo-icon.png',
+      tag: 'clideck-test',
+    });
+    n.onclick = () => { window.focus(); n.close(); };
+    testResult.textContent = 'Sent — check your device. Hint: on mobile, switch to another app first so this tab loses focus, or the system may suppress the banner.';
+  } catch (err) {
+    testResult.textContent = `Failed: ${err.message || err}`;
+  }
+});
 
 document.getElementById('cfg-notify-sound').addEventListener('change', (e) => {
   document.getElementById('notify-sound-row').classList.toggle('hidden', !e.target.checked);
