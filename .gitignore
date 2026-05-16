@@ -18,3 +18,9 @@ npm-debug.log*
 
 # Work planning
 workplan.txt
+
+# Playwright outputs
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
