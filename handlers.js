@@ -250,6 +250,25 @@ function remoteCliEnv() {
 function onConnection(ws) {
   sessions.clients.add(ws);
 
+  // Heartbeat: detect dead TCP sockets (NAT/proxy/laptop-sleep) so the server
+  // doesn't keep streaming output into the void and so the client gets a
+  // prompt close event to trigger reconnect. Also responds to app-level
+  // {type:'ping'} from the client with {type:'pong'} so the client can
+  // detect a hung server even when the OS still considers the TCP socket
+  // alive.
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  const heartbeat = setInterval(() => {
+    if (ws.readyState !== 1) return;
+    if (!ws.isAlive) {
+      try { ws.terminate(); } catch { /* noop */ }
+      return;
+    }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { /* noop */ }
+  }, 20000);
+  ws.on('close', () => clearInterval(heartbeat));
+
   ws.send(JSON.stringify({ type: 'config', config: configForClient() }));
   ws.send(JSON.stringify({ type: 'themes', themes }));
   ws.send(JSON.stringify({ type: 'presets', presets: clientPresets() }));
@@ -265,6 +284,9 @@ function onConnection(ws) {
     try { msg = JSON.parse(raw); } catch { return; }
 
     switch (msg.type) {
+      case 'ping':
+        try { ws.send(JSON.stringify({ type: 'pong', t: msg.t })); } catch { /* noop */ }
+        break;
       case 'create':          sessions.create(msg, ws, cfg); break;
       case 'session.resume':  sessions.resume(msg, ws, cfg); break;
       case 'session.restart': console.log('[handler] session.restart', msg.id); sessions.restart(msg, ws, cfg); break;

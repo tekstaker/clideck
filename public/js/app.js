@@ -16,18 +16,58 @@ import { renderPrompts } from './prompts.js';
 const shownAgentHealthToasts = new Set();
 let reconnectReplaySkip = null;
 
+// Connection liveness. Browsers leave WebSocket sockets in a half-open state
+// when the underlying TCP connection silently dies (laptop sleep, Wi-Fi roam,
+// NAT timeout, idle proxy). Without an app-level heartbeat the user is stuck:
+// keystrokes hit a socket the OS still thinks is open, so onclose never fires
+// and the only escape was a full page refresh. We send a ping every 20s and
+// force a reconnect if no pong arrives within 10s.
+const HEARTBEAT_MS = 20000;
+const PONG_TIMEOUT_MS = 10000;
+let heartbeatTimer = null;
+let pongTimer = null;
+let lastDropToastId = null;
+
+function clearHeartbeat() {
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+  if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+}
+
+function startHeartbeat() {
+  clearHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (pongTimer) return; // a ping is already in flight
+    send({ type: 'ping', t: Date.now() });
+    pongTimer = setTimeout(() => {
+      pongTimer = null;
+      // Server didn't respond — assume the connection is dead and force the
+      // reconnect path. close() will fire onclose, which schedules connect().
+      try { state.ws && state.ws.close(); } catch { /* noop */ }
+    }, PONG_TIMEOUT_MS);
+  }, HEARTBEAT_MS);
+}
+
 function connect() {
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   state.ws = new WebSocket(`${wsProtocol}//${location.host}`);
 
   state.ws.onopen = () => {
     reconnectReplaySkip = new Set(state.terms.keys());
+    if (lastDropToastId) {
+      showToast('Reconnected', { id: lastDropToastId, type: 'success', duration: 2000 });
+      lastDropToastId = null;
+    }
+    startHeartbeat();
     send({ type: 'remote.status' });
   };
 
   state.ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
     switch (msg.type) {
+      case 'pong':
+        if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+        break;
       case 'config':
         state.cfg = msg.config;
         applyMode(state.cfg.colorMode || 'dark');
@@ -330,8 +370,30 @@ function connect() {
     }
   };
 
-  state.ws.onclose = () => setTimeout(connect, 1000);
+  state.ws.onclose = () => {
+    clearHeartbeat();
+    if (!lastDropToastId) {
+      lastDropToastId = `ws-reconnect-${Date.now()}`;
+      showToast('Connection lost — reconnecting…', { id: lastDropToastId, type: 'warn', duration: 0 });
+    }
+    setTimeout(connect, 1000);
+  };
+  // onerror by itself does not trigger reconnect — close() does. Force-close
+  // so the onclose path runs.
+  state.ws.onerror = () => {
+    try { state.ws && state.ws.close(); } catch { /* noop */ }
+  };
 }
+
+// When the tab becomes visible again (laptop wake, switching back), the
+// socket may already be dead even though no event fired. Kick the reconnect
+// path immediately rather than waiting for the next heartbeat tick.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    try { state.ws && state.ws.close(); } catch { /* noop */ }
+  }
+});
 
 // Mobile sidebar
 const mobileQuery = window.matchMedia('(max-width: 960px)');

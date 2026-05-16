@@ -26,7 +26,7 @@ async function loadFreshTerminals() {
   const state = stateMod.state;
 
   const sentMessages = [];
-  state.ws = { send: (data) => sentMessages.push(JSON.parse(data)) };
+  state.ws = { readyState: WebSocket.OPEN, send: (data) => sentMessages.push(JSON.parse(data)) };
   state.active = null;
   state.terms = new Map();
 
