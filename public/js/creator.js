@@ -3,6 +3,8 @@ import { esc, agentIcon, binName } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
 import { estimateSize } from './terminals.js';
 import { showToast } from './toast.js';
+import { confirmClose } from './confirm.js';
+import { sessionsInCwd } from './session-collisions.js';
 
 const ADJECTIVES = [
   'Blue', 'Red', 'Green', 'Purple', 'Golden', 'Silver', 'Coral', 'Amber',
@@ -102,11 +104,27 @@ function sortedPresets() {
   return [...agents, ...shell];
 }
 
-function createFromPreset(preset, sessionName, cwd, projectId) {
-  // Find existing command matching this preset
+async function createFromPreset(preset, sessionName, cwd, projectId) {
+  // Warn if a session (active or dormant) is already in this cwd. The
+  // user can still proceed — clideck supports multiple terminals per
+  // folder — but the prompt makes it deliberate instead of accidental.
+  const collisions = cwd ? sessionsInCwd(cwd) : [];
+  if (collisions.length) {
+    const active = collisions.filter(c => c.kind === 'active').length;
+    const dormant = collisions.length - active;
+    const bits = [];
+    if (active) bits.push(`${active} active`);
+    if (dormant) bits.push(`${dormant} previous`);
+    const ok = await confirmClose(
+      `There ${collisions.length > 1 ? 'are' : 'is'} already ${bits.join(' + ')} session${collisions.length > 1 ? 's' : ''} in this folder. Open another one anyway?`,
+      'Open another',
+    );
+    if (!ok) return false;
+  }
   const cmd = ensureCommandForPreset(preset);
   send({ type: 'create', commandId: cmd.id, name: sessionName, cwd, projectId: projectId || undefined, ...estimateSize() });
   localStorage.setItem(MRU_KEY, preset.presetId);
+  return true;
 }
 
 function ensureCommandForPreset(preset) {
@@ -326,8 +344,9 @@ export function openCreator() {
     const name = nameInput.value.trim() || fallbackName;
     const cwd = cwdInput.value.trim() || undefined;
     const projectId = projHidden?.value && projHidden.value !== NO_PROJECT_VALUE ? projHidden.value : undefined;
-    createFromPreset(preset, name, cwd, projectId);
-    closeCreator();
+    createFromPreset(preset, name, cwd, projectId).then(ok => {
+      if (ok) closeCreator();
+    });
   });
 }
 

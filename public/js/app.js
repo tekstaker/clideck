@@ -8,6 +8,7 @@ import { confirmClose } from './confirm.js';
 import { applyTheme } from './profiles.js';
 import { toggleMode, applyMode } from './color-mode.js';
 import { showToast } from './toast.js';
+import { sessionsInCwd } from './session-collisions.js';
 import './nav.js';
 import { initDrag, wasDragging } from './drag.js';
 import { registerHotkey, unregisterHotkey, unregisterAllForPlugin } from './hotkeys.js';
@@ -105,14 +106,14 @@ function connect() {
           for (const id of [...state.terms.keys()]) {
             if (!liveIds.has(id)) removeTerminal(id);
           }
-          msg.list.forEach(s => addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview, s.presetId));
+          msg.list.forEach(s => addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview, s.presetId, s.cwd));
           if (!state.active || !state.terms.has(state.active)) {
             if (msg.list.length) select(msg.list[0].id);
           }
         }
         break;
       case 'created':
-        if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview, msg.presetId);
+        if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview, msg.presetId, msg.cwd);
         select(msg.id);
         applyFilter();
         closeMobileSidebar();
@@ -1010,6 +1011,9 @@ function renderBulkImportModal(msg) {
   const hasEntries = entries && entries.length > 0;
   const presets = availableSessionPresets();
   const selectedPresetId = defaultBulkPresetId();
+  const initialSelectableCount = entries
+    ? entries.filter(e => sessionsInCwd(e.full).length === 0).length
+    : 0;
 
   modal.innerHTML = `
     <div class="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl shadow-black/60 w-[480px] max-w-[92vw] max-h-[80vh] flex flex-col">
@@ -1019,7 +1023,7 @@ function renderBulkImportModal(msg) {
       </div>
       <div class="px-5 py-3 border-b border-slate-700/40 flex items-center gap-3 ${entries ? '' : 'hidden'}">
         <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-          <input type="checkbox" id="bi-select-all" class="accent-blue-500" ${hasEntries ? 'checked' : ''} ${hasEntries ? '' : 'disabled'}>
+          <input type="checkbox" id="bi-select-all" class="accent-blue-500" ${hasEntries ? '' : 'disabled'}>
           <span>Select all</span>
         </label>
         <label class="flex items-center gap-2 ml-auto text-xs text-slate-400">
@@ -1034,16 +1038,27 @@ function renderBulkImportModal(msg) {
           ? `<div class="p-6 text-center text-sm text-slate-500">Loading…</div>`
           : !hasEntries
             ? `<div class="p-6 text-center text-sm text-slate-500">No subfolders found.</div>`
-            : entries.map(e => `
-                <label class="flex items-center gap-2.5 px-3 py-1.5 rounded hover:bg-slate-700/40 cursor-pointer">
-                  <input type="checkbox" class="bi-row accent-blue-500" data-name="${esc(e.name)}" data-full="${esc(e.full)}" checked>
-                  <span class="flex-1 text-sm text-slate-200 truncate" title="${esc(e.full)}">${esc(e.name)}</span>
-                </label>`).join('')}
+            : entries.map(e => {
+                const collisions = sessionsInCwd(e.full);
+                const has = collisions.length > 0;
+                const kind = has
+                  ? collisions.some(c => c.kind === 'active') ? 'session running' : 'previous session'
+                  : '';
+                const titleAttr = has
+                  ? `${e.full} — ${collisions.map(c => c.name).join(', ')} (${kind})`
+                  : e.full;
+                return `
+                <label class="flex items-center gap-2.5 px-3 py-1.5 rounded hover:bg-slate-700/40 cursor-pointer ${has ? 'opacity-60' : ''}">
+                  <input type="checkbox" class="bi-row accent-blue-500" data-name="${esc(e.name)}" data-full="${esc(e.full)}" data-collides="${has ? '1' : ''}" ${has ? '' : 'checked'}>
+                  <span class="flex-1 text-sm ${has ? 'text-slate-400' : 'text-slate-200'} truncate" title="${esc(titleAttr)}">${esc(e.name)}</span>
+                  ${has ? `<span class="text-[10px] uppercase tracking-wider text-amber-400/80 flex-shrink-0">${esc(kind)}</span>` : ''}
+                </label>`;
+              }).join('')}
       </div>
       <div class="px-5 py-3 border-t border-slate-700/60 flex items-center gap-2">
-        <span id="bi-count" class="text-[11px] text-slate-500">${hasEntries ? `${entries.length} selected` : ''}</span>
+        <span id="bi-count" class="text-[11px] text-slate-500">${initialSelectableCount ? `${initialSelectableCount} selected` : ''}</span>
         <button id="bi-cancel" class="ml-auto px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
-        <button id="bi-ok" class="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed" ${hasEntries ? '' : 'disabled'}>Start sessions</button>
+        <button id="bi-ok" class="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed" ${initialSelectableCount ? '' : 'disabled'}>Start sessions</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -1066,12 +1081,21 @@ function renderBulkImportModal(msg) {
   }
   for (const cb of modal.querySelectorAll('.bi-row')) cb.addEventListener('change', updateCount);
 
-  modal.querySelector('#bi-ok').addEventListener('click', () => {
-    const picks = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({
+  modal.querySelector('#bi-ok').addEventListener('click', async () => {
+    const picked = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({
       name: cb.dataset.name,
       full: cb.dataset.full,
+      collides: cb.dataset.collides === '1',
     }));
-    if (!picks.length) { closeBulkImport(); return; }
+    if (!picked.length) { closeBulkImport(); return; }
+    const overrides = picked.filter(p => p.collides);
+    if (overrides.length) {
+      const ok = await confirmClose(
+        `${overrides.length} of these folder${overrides.length > 1 ? 's already have' : ' already has'} a session (active or previous). Start additional sessions in ${overrides.length > 1 ? 'them' : 'it'} anyway?`,
+        'Start anyway',
+      );
+      if (!ok) return;
+    }
     const presetSel = modal.querySelector('#bi-preset');
     const presetId = presetSel?.value || defaultBulkPresetId();
     const commandId = ensureCommandIdForPreset(presetId);
@@ -1080,10 +1104,10 @@ function renderBulkImportModal(msg) {
       return;
     }
     localStorage.setItem(BULK_AGENT_KEY, presetId);
-    showToast(`Starting ${picks.length} session${picks.length > 1 ? 's' : ''}…`, { duration: 3000 });
+    showToast(`Starting ${picked.length} session${picked.length > 1 ? 's' : ''}…`, { duration: 3000 });
     // Stagger 1s/session to keep node-pty + agent boot orderly. Same pattern
     // as resumeDormantSessions; on a fast machine this still drains quickly.
-    picks.forEach((p, i) => {
+    picked.forEach((p, i) => {
       setTimeout(() => {
         send({ type: 'create', commandId, name: p.name, cwd: p.full, ...estimateSize() });
       }, i * 1000);

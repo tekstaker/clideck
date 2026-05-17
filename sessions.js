@@ -181,7 +181,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
         const err = spawnSession(newId, cmd, parts, s.cwd, s.name, s.themeId, s.commandId, null, s.projectId);
         if (!err) {
           const presetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
-          broadcast({ type: 'created', id: newId, name: s.name, themeId: s.themeId, commandId: s.commandId, presetId, projectId: s.projectId || null });
+          broadcast({ type: 'created', id: newId, name: s.name, themeId: s.themeId, commandId: s.commandId, presetId, projectId: s.projectId || null, cwd: s.cwd || '' });
           broadcast({ type: 'session.recovered', originalId: id, newId, cwd: s.cwd, name: s.name });
           console.log(`Session ${id.slice(0, 8)}: failed resume — started fresh ${newId.slice(0, 8)} in ${s.cwd}`);
         } else {
@@ -254,7 +254,7 @@ function create(msg, ws, cfg) {
 
   const createdPresetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
   const installId = msg.installId || undefined;
-  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId: createdPresetId, projectId, installId });
+  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId: createdPresetId, projectId, installId, cwd: cwd || '' });
 
   // Immediate setup notification if config not detected
   const bin = binName(cmd.command);
@@ -287,7 +287,7 @@ function createProgrammatic(opts, cfg) {
   if (s && opts.ephemeral) s.ephemeral = true;
 
   const presetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
-  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId, projectId });
+  broadcast({ type: 'created', id, name, themeId, commandId: cmd.id, presetId, projectId, cwd: cwd || '' });
   return { id };
 }
 
@@ -344,7 +344,7 @@ function resume(msg, ws, cfg) {
   broadcast({ type: 'sessions.resumable', list: getResumable(cfg) });
 
   const resumePresetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || saved.presetId || 'shell';
-  broadcast({ type: 'created', id, name: saved.name, themeId: saved.themeId || saved.profileId || 'default', commandId: saved.commandId, presetId: resumePresetId, projectId: saved.projectId || null, muted: !!saved.muted, resumed: true, lastPreview: saved.lastPreview || '' });
+  broadcast({ type: 'created', id, name: saved.name, themeId: saved.themeId || saved.profileId || 'default', commandId: saved.commandId, presetId: resumePresetId, projectId: saved.projectId || null, muted: !!saved.muted, resumed: true, lastPreview: saved.lastPreview || '', cwd: saved.cwd || '' });
 }
 
 // --- Standard session operations ---
@@ -462,6 +462,7 @@ function list() {
   return [...sessions].map(([id, s]) => ({
     id, name: s.name, themeId: s.themeId, commandId: s.commandId, presetId: s.presetId || 'shell', projectId: s.projectId, muted: !!s.muted,
     roleName: s.roleName || null,
+    cwd: s.cwd || '',
     // Last preview text for sidebar display on reconnect
     lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
     menu: s._menuKey ? JSON.parse(s._menuKey) : undefined,
