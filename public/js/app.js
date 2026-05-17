@@ -908,14 +908,18 @@ function openProjectCreator() {
   });
 }
 
-// --- Bulk project import ---
-// Two-step flow: (1) folder-pick a parent, (2) checklist of subfolders.
-// On confirm, push N entries into cfg.projects (one per checked subfolder,
-// name = basename, path = full) and broadcast a single config.update.
+// --- Bulk session import ---
+// Two-step flow: (1) folder-pick a parent, (2) checklist of subfolders +
+// an agent/preset picker. On confirm we send one `create` message per
+// checked subfolder, staggered ~1s apart so we don't slam node-pty into
+// spawning N PTYs in the same tick (same cadence as resumeDormantSessions
+// uses for batch-resume).
 //
-// Bypasses the existing per-project create flow precisely because that
-// flow's one-folder-at-a-time UX is what we're trying to escape — Lance's
-// projects all live under a single parent.
+// Earlier this flow created `cfg.projects` entries; Lance asked for
+// sessions instead — each folder becomes a live agent session in its own
+// cwd, which is what he actually wants for "pull all my repos into
+// clideck".
+const BULK_AGENT_KEY = 'clideck.bulkImport.preset';
 let bulkImportContext = null;
 
 function openBulkImport() {
@@ -940,6 +944,60 @@ function handleBulkSubdirsResponse(msg) {
   renderBulkImportModal(msg);
 }
 
+// Which presets are available for "start a session"? Mirrors the logic
+// in creator.js's sortedPresets: enabled, not missing, isAgent first then
+// shells, most-recently-used floats to the top.
+function availableSessionPresets() {
+  const all = (state.presets || []).filter(p => {
+    const cmd = (state.cfg.commands || []).find(c => c.presetId === p.presetId);
+    return !cmd || cmd.enabled !== false;
+  });
+  const agents = all.filter(p => p.isAgent);
+  const shells = all.filter(p => !p.isAgent);
+  return [...agents, ...shells];
+}
+
+function defaultBulkPresetId() {
+  const presets = availableSessionPresets();
+  if (!presets.length) return '';
+  const stored = localStorage.getItem(BULK_AGENT_KEY);
+  if (stored && presets.some(p => p.presetId === stored)) return stored;
+  const mru = localStorage.getItem('termui-last-preset'); // creator.js's MRU
+  if (mru && presets.some(p => p.presetId === mru)) return mru;
+  return presets[0].presetId;
+}
+
+// Ensure a cfg.commands entry exists for the given preset and return its
+// id. Adapted from creator.js's ensureCommandForPreset — duplicated here
+// (a small block) rather than added as an export to avoid widening the
+// creator module's API for a single caller.
+function ensureCommandIdForPreset(presetId) {
+  const preset = (state.presets || []).find(p => p.presetId === presetId);
+  if (!preset) return null;
+  let cmd = (state.cfg.commands || []).find(c => c.presetId === presetId);
+  if (cmd) return cmd.id;
+  cmd = {
+    id: crypto.randomUUID(),
+    presetId: preset.presetId,
+    label: preset.name,
+    icon: preset.icon,
+    command: preset.command,
+    enabled: true,
+    defaultPath: '',
+    isAgent: preset.isAgent,
+    canResume: preset.canResume,
+    resumeCommand: preset.resumeCommand,
+    sessionIdPattern: preset.sessionIdPattern,
+    outputMarker: preset.outputMarker || null,
+    telemetryEnabled: !!preset.telemetrySetup,
+    telemetryStatus: null,
+    bridge: preset.bridge,
+  };
+  state.cfg.commands = [...(state.cfg.commands || []), cmd];
+  send({ type: 'config.update', config: state.cfg });
+  return cmd.id;
+}
+
 function renderBulkImportModal(msg) {
   closeBulkImport(); // wipe the empty placeholder, then rehydrate
   bulkImportContext = { parentPath: msg.path };
@@ -950,88 +1008,86 @@ function renderBulkImportModal(msg) {
 
   const entries = Array.isArray(msg.entries) ? msg.entries : null;
   const hasEntries = entries && entries.length > 0;
-  const importable = entries ? entries.filter(e => !e.isProject) : [];
+  const presets = availableSessionPresets();
+  const selectedPresetId = defaultBulkPresetId();
 
-  // Header + body shell. We render the list inline so the modal width stays
-  // stable through the loading -> loaded transition.
   modal.innerHTML = `
     <div class="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl shadow-black/60 w-[480px] max-w-[92vw] max-h-[80vh] flex flex-col">
       <div class="px-5 py-4 border-b border-slate-700/60">
-        <div class="text-sm font-semibold text-slate-200">Import projects</div>
+        <div class="text-sm font-semibold text-slate-200">Start sessions for these folders</div>
         <div class="text-xs text-slate-500 mt-0.5 truncate" title="${esc(msg.path || '')}">${esc(msg.path || '')}</div>
       </div>
       <div class="px-5 py-3 border-b border-slate-700/40 flex items-center gap-3 ${entries ? '' : 'hidden'}">
         <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-          <input type="checkbox" id="bi-select-all" class="accent-blue-500" ${importable.length ? 'checked' : ''} ${importable.length ? '' : 'disabled'}>
+          <input type="checkbox" id="bi-select-all" class="accent-blue-500" ${hasEntries ? 'checked' : ''} ${hasEntries ? '' : 'disabled'}>
           <span>Select all</span>
         </label>
-        <span id="bi-count" class="ml-auto text-[11px] text-slate-500">${importable.length} importable</span>
+        <label class="flex items-center gap-2 ml-auto text-xs text-slate-400">
+          <span>Agent</span>
+          <select id="bi-preset" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 outline-none focus:border-blue-500 transition-colors">
+            ${presets.map(p => `<option value="${esc(p.presetId)}" ${p.presetId === selectedPresetId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}
+          </select>
+        </label>
       </div>
       <div id="bi-list" class="flex-1 overflow-y-auto tmx-scroll px-2 py-2">
         ${entries === null
           ? `<div class="p-6 text-center text-sm text-slate-500">Loading…</div>`
           : !hasEntries
             ? `<div class="p-6 text-center text-sm text-slate-500">No subfolders found.</div>`
-            : entries.map(e => {
-                const disabled = !!e.isProject;
-                return `
-                <label class="flex items-center gap-2.5 px-3 py-1.5 rounded hover:bg-slate-700/40 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : ''}">
-                  <input type="checkbox" class="bi-row accent-blue-500" data-name="${esc(e.name)}" data-full="${esc(e.full)}" ${disabled ? 'disabled' : 'checked'}>
+            : entries.map(e => `
+                <label class="flex items-center gap-2.5 px-3 py-1.5 rounded hover:bg-slate-700/40 cursor-pointer">
+                  <input type="checkbox" class="bi-row accent-blue-500" data-name="${esc(e.name)}" data-full="${esc(e.full)}" checked>
                   <span class="flex-1 text-sm text-slate-200 truncate" title="${esc(e.full)}">${esc(e.name)}</span>
-                  ${disabled ? `<span class="text-[10px] uppercase tracking-wider text-slate-500">already imported</span>` : ''}
-                </label>`;
-              }).join('')}
+                </label>`).join('')}
       </div>
-      <div class="px-5 py-3 border-t border-slate-700/60 flex items-center justify-end gap-2">
-        <button id="bi-cancel" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
-        <button id="bi-ok" class="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed" ${importable.length ? '' : 'disabled'}>Import</button>
+      <div class="px-5 py-3 border-t border-slate-700/60 flex items-center gap-2">
+        <span id="bi-count" class="text-[11px] text-slate-500">${hasEntries ? `${entries.length} selected` : ''}</span>
+        <button id="bi-cancel" class="ml-auto px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+        <button id="bi-ok" class="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed" ${hasEntries ? '' : 'disabled'}>Start sessions</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 
   const updateCount = () => {
     const n = modal.querySelectorAll('.bi-row:checked').length;
-    const okBtn = modal.querySelector('#bi-ok');
-    okBtn.disabled = n === 0;
+    modal.querySelector('#bi-ok').disabled = n === 0;
     const countEl = modal.querySelector('#bi-count');
-    if (countEl) countEl.textContent = `${n} selected`;
+    if (countEl) countEl.textContent = n ? `${n} selected` : '';
   };
 
   modal.querySelector('#bi-cancel').addEventListener('click', closeBulkImport);
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeBulkImport();
-  });
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeBulkImport(); });
   const selectAll = modal.querySelector('#bi-select-all');
   if (selectAll) {
     selectAll.addEventListener('change', () => {
-      for (const cb of modal.querySelectorAll('.bi-row:not(:disabled)')) cb.checked = selectAll.checked;
+      for (const cb of modal.querySelectorAll('.bi-row')) cb.checked = selectAll.checked;
       updateCount();
     });
   }
-  for (const cb of modal.querySelectorAll('.bi-row')) {
-    cb.addEventListener('change', updateCount);
-  }
+  for (const cb of modal.querySelectorAll('.bi-row')) cb.addEventListener('change', updateCount);
+
   modal.querySelector('#bi-ok').addEventListener('click', () => {
     const picks = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({
       name: cb.dataset.name,
       full: cb.dataset.full,
     }));
     if (!picks.length) { closeBulkImport(); return; }
-    const projects = state.cfg.projects || [];
-    let added = 0;
-    for (const p of picks) {
-      projects.push({
-        id: crypto.randomUUID(),
-        name: p.name,
-        path: p.full,
-        color: PROJECT_COLORS[(projects.length + added) % PROJECT_COLORS.length],
-        collapsed: false,
-      });
-      added++;
+    const presetSel = modal.querySelector('#bi-preset');
+    const presetId = presetSel?.value || defaultBulkPresetId();
+    const commandId = ensureCommandIdForPreset(presetId);
+    if (!commandId) {
+      showToast('Could not resolve agent for bulk import.', { type: 'error' });
+      return;
     }
-    state.cfg.projects = projects;
-    regroupSessions();
-    send({ type: 'config.update', config: state.cfg });
+    localStorage.setItem(BULK_AGENT_KEY, presetId);
+    showToast(`Starting ${picks.length} session${picks.length > 1 ? 's' : ''}…`, { duration: 3000 });
+    // Stagger 1s/session to keep node-pty + agent boot orderly. Same pattern
+    // as resumeDormantSessions; on a fast machine this still drains quickly.
+    picks.forEach((p, i) => {
+      setTimeout(() => {
+        send({ type: 'create', commandId, name: p.name, cwd: p.full, ...estimateSize() });
+      }, i * 1000);
+    });
     closeBulkImport();
   });
 }
