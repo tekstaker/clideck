@@ -1000,12 +1000,49 @@ function buildResumableRow(s) {
       </div>
       <div class="flex items-center gap-1 mt-0.5">
         <span class="flex-1 text-xs text-slate-600 truncate">${s.lastPreview ? esc(s.lastPreview) : esc(label) + (path ? ' · ' + esc(path) : '')}</span>
+        <button class="resumable-menu-btn opacity-0 group-hover:opacity-100 text-slate-600 hover:text-slate-300 flex-shrink-0 transition-opacity p-0.5" title="Rename or delete">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="16" r="1.5" fill="currentColor"/></svg>
+        </button>
         <button class="resume-btn opacity-60 group-hover:opacity-100 text-slate-500 hover:text-emerald-400 flex-shrink-0 transition-all flex items-center gap-0.5 text-[11px] font-medium" title="Resume session">
           Resume${RESUME_SVG}
         </button>
       </div>
     </div>`;
   return row;
+}
+
+// In-place rename for a resumable ("Previous Sessions") row, mirroring
+// startRename for active sessions but addressing the resumable-row DOM
+// and routing to the new `resumable.rename` server handler.
+export function startResumableRename(id) {
+  const el = document.querySelector(`[data-resumable-id="${id}"] .resumable-name`);
+  if (!el || el.contentEditable === 'true') return;
+  const original = el.textContent;
+  el.contentEditable = 'true';
+  el.style.userSelect = 'text';
+  el.style.webkitUserSelect = 'text';
+  el.classList.add('cursor-text');
+  el.focus();
+  document.getSelection().selectAllChildren(el);
+
+  let cancelled = false;
+  const finish = () => {
+    el.removeEventListener('keydown', onKey);
+    el.contentEditable = 'false';
+    el.style.userSelect = '';
+    el.style.webkitUserSelect = '';
+    el.classList.remove('cursor-text');
+    if (cancelled) { el.textContent = original; return; }
+    const name = el.textContent.trim() || original;
+    el.textContent = name;
+    if (name !== original) send({ type: 'resumable.rename', id, name });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+    if (e.key === 'Escape') { cancelled = true; el.blur(); }
+  };
+  el.addEventListener('blur', finish, { once: true });
+  el.addEventListener('keydown', onKey);
 }
 
 export function renderResumable() {

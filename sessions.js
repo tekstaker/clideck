@@ -159,6 +159,44 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     telemetry.clear(id);
     opencodeBridge.clear(id);
     plugins.clearStatus(id);
+
+    // Failed-resume auto-recovery. When the agent CLI can't find the
+    // requested conversation (e.g. `claude --resume <stale-token>` prints
+    // "No conversation found with session ID …" and exits within seconds)
+    // we'd otherwise re-queue the same broken entry on the next pass through
+    // the resumable-rehydrate branch below, trapping the user in a loop with
+    // no way to delete it. Detection is duration-only — a successful resume
+    // keeps the PTY alive for as long as the user keeps using it.
+    const FAILED_RESUME_WINDOW_MS = 5000;
+    const isFailedResume = s.resumedAt && (Date.now() - s.resumedAt) < FAILED_RESUME_WINDOW_MS;
+    if (isFailedResume) {
+      transcript.clear(id);
+      sessions.delete(id);
+      broadcast({ type: 'closed', id });
+      // Quarantine the original stale entry: do NOT push it back into resumable.
+      // Then start a fresh session in the same cwd so the user can keep working.
+      try {
+        const newId = crypto.randomUUID();
+        const parts = parseCommand(cmd.command);
+        const err = spawnSession(newId, cmd, parts, s.cwd, s.name, s.themeId, s.commandId, null, s.projectId);
+        if (!err) {
+          const presetId = PRESETS.find(p => binName(p.command) === binName(cmd.command))?.presetId || 'shell';
+          broadcast({ type: 'created', id: newId, name: s.name, themeId: s.themeId, commandId: s.commandId, presetId, projectId: s.projectId || null });
+          broadcast({ type: 'session.recovered', originalId: id, newId, cwd: s.cwd, name: s.name });
+          console.log(`Session ${id.slice(0, 8)}: failed resume — started fresh ${newId.slice(0, 8)} in ${s.cwd}`);
+        } else {
+          console.error(`Session ${id.slice(0, 8)}: failed-resume auto-recovery spawn failed: ${err.message}`);
+        }
+      } catch (e) {
+        console.error('failed-resume recovery threw:', e.message);
+      }
+      // Ensure the resumable list reflects the removal even though we never
+      // re-pushed — the original `resume()` call already filtered it out, but
+      // late-arriving clients depend on the broadcast to refresh.
+      broadcast({ type: 'sessions.resumable', list: getResumable() });
+      return;
+    }
+
     // If resumable and token captured, move to resumable list (keep transcript for search)
     if (!s.ephemeral && cmd.canResume && cmd.resumeCommand && s.sessionToken) {
       resumable.push({
@@ -293,6 +331,12 @@ function resume(msg, ws, cfg) {
   if (s) {
     if (saved.muted) s.muted = true;
     if (saved.roleName) s.roleName = saved.roleName;
+    // Mark the spawn moment so onExit can distinguish a failed resume
+    // (PTY exits within seconds because the underlying conversation is
+    // gone) from a successful one. Cleared once the session lives past
+    // the detection window, see below.
+    s.resumedAt = Date.now();
+    setTimeout(() => { if (sessions.get(id) === s) s.resumedAt = null; }, 5000);
   }
 
   // Remove from resumable list and notify all clients
@@ -439,6 +483,37 @@ function setProject(id, projectId) {
   return false;
 }
 
+// Rename a dormant ("resumable") session by id. Mutates in-memory entry,
+// persists via saveSessions(), and broadcasts the updated list. Used by the
+// per-row Rename action in "Previous Sessions" — the only path the user has
+// to clean up stale entries beyond the existing bulk-clear.
+function renameResumable(msg, cfg) {
+  const idx = resumable.findIndex(r => r.id === msg?.id);
+  if (idx < 0) return false;
+  const name = String(msg?.name || '').trim().slice(0, 200);
+  if (!name) return false;
+  resumable[idx] = { ...resumable[idx], name };
+  try { saveSessions(cfg || { commands: [] }); } catch (e) {
+    console.error('[resumable.rename] persist failed:', e.message);
+  }
+  broadcast({ type: 'sessions.resumable', list: getResumable(cfg) });
+  return true;
+}
+
+// Test-only hooks. Guarded so production cannot reach in and corrupt state.
+function __setResumableForTest(arr) {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__setResumableForTest is test-only');
+  }
+  resumable = Array.isArray(arr) ? arr.slice() : [];
+}
+function __getResumableForTest() {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__getResumableForTest is test-only');
+  }
+  return resumable;
+}
+
 function getResumable(cfg) {
   if (!cfg) return resumable;
   return resumable.map(s => {
@@ -542,6 +617,7 @@ function shutdown(cfg) {
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
   create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close,
-  list, getResumable, sendBuffers,
+  list, getResumable, renameResumable, sendBuffers,
   loadSessions, startAutoSave, shutdown,
+  __setResumableForTest, __getResumableForTest,
 };

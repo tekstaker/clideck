@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
@@ -128,6 +128,15 @@ function connect() {
       case 'closed':
         removeTerminal(msg.id);
         break;
+      case 'session.recovered': {
+        // The server tried to resume a dormant session, the underlying
+        // agent couldn't find that conversation, so it spawned a fresh
+        // session in the same working directory. Tell the user.
+        const cwd = (msg.cwd || '').replace(/\\\\/g, '\\');
+        const short = cwd.length > 60 ? '…' + cwd.slice(-60) : cwd;
+        showToast(`Couldn't resume previous session — started a fresh one in ${short || 'the same folder'}.`, { duration: 6000 });
+        break;
+      }
       case 'session.restarted':
         console.log('[restart] got session.restarted from server', msg);
         restartComplete(msg.id, msg);
@@ -216,6 +225,9 @@ function connect() {
       }
       case 'dirs':
         handleDirsResponse(msg);
+        break;
+      case 'dirs.subdirs':
+        handleBulkSubdirsResponse(msg);
         break;
       case 'dirs.mkdir':
         handleMkdirResponse(msg);
@@ -438,6 +450,16 @@ sessionList.addEventListener('click', (e) => {
     return;
   }
 
+  // Per-row menu button on a dormant ("resumable") session — must run
+  // BEFORE the row-level resume handler below, otherwise clicking the
+  // dots immediately fires a resume.
+  const resumableMenuBtn = e.target.closest('.resumable-menu-btn');
+  if (resumableMenuBtn) {
+    const row = resumableMenuBtn.closest('[data-resumable-id]');
+    if (row) openResumableRowMenu(row.dataset.resumableId, resumableMenuBtn);
+    return;
+  }
+
   // Resumable session click
   const resumableRow = e.target.closest('[data-resumable-id]');
   if (resumableRow) {
@@ -473,6 +495,12 @@ sessionList.addEventListener('dblclick', (e) => {
   if (projNameEl) {
     const projId = e.target.closest('.project-group')?.dataset.projectId;
     if (projId) startProjectRename(projId);
+  }
+  // Resumable (dormant) row rename
+  const resumableNameEl = e.target.closest('.resumable-name');
+  if (resumableNameEl) {
+    const rid = e.target.closest('[data-resumable-id]')?.dataset.resumableId;
+    if (rid) startResumableRename(rid);
   }
 });
 
@@ -510,6 +538,10 @@ document.getElementById('btn-new').addEventListener('click', () => {
 document.getElementById('btn-new-project').addEventListener('click', () => {
   closeCreator();
   openProjectCreator();
+});
+document.getElementById('btn-bulk-import').addEventListener('click', () => {
+  closeCreator();
+  openBulkImport();
 });
 
 // Search & filter toolbar
@@ -737,6 +769,51 @@ function openPrevSessionsMenu(anchorEl) {
   };
 }
 
+// --- Per-row menu on a Previous Sessions entry ---
+// Mirrors the active session's three-dot menu (openMenu in terminals.js)
+// but limits the actions to the two that make sense for a dormant entry:
+// rename (in-place) and delete (with the standard confirm modal).
+let resumableRowMenuCleanup = null;
+function openResumableRowMenu(resumableId, anchorEl) {
+  if (resumableRowMenuCleanup) resumableRowMenuCleanup();
+  const rect = anchorEl.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.className = 'fixed z-[400] min-w-[140px] bg-slate-800 border border-slate-700 rounded-lg shadow-xl shadow-black/40 py-1';
+  menu.innerHTML = `
+    <button class="rrm-action flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="rename">
+      <svg class="w-4 h-4 flex-shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+      Rename
+    </button>
+    <button class="rrm-action flex items-center gap-2 w-full px-3 py-2 text-sm text-red-400 hover:bg-slate-700 transition-colors text-left" data-action="delete">
+      <svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      Delete
+    </button>`;
+  positionMenu(menu, rect);
+  const onClick = (e) => {
+    const btn = e.target.closest('.rrm-action');
+    if (!btn) return;
+    if (resumableRowMenuCleanup) resumableRowMenuCleanup();
+    if (btn.dataset.action === 'rename') {
+      startResumableRename(resumableId);
+      return;
+    }
+    if (btn.dataset.action === 'delete') {
+      confirmClose('Delete this previous session?', 'Delete').then(ok => {
+        if (ok) send({ type: 'close', id: resumableId });
+      });
+    }
+  };
+  const onOutside = (e) => { if (!menu.contains(e.target)) { if (resumableRowMenuCleanup) resumableRowMenuCleanup(); } };
+  menu.addEventListener('click', onClick);
+  requestAnimationFrame(() => document.addEventListener('click', onOutside));
+  resumableRowMenuCleanup = () => {
+    menu.removeEventListener('click', onClick);
+    document.removeEventListener('click', onOutside);
+    menu.remove();
+    resumableRowMenuCleanup = null;
+  };
+}
+
 // --- Project creator ---
 const PROJECT_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#84cc16'];
 const FOLDER_SVG = `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
@@ -828,6 +905,134 @@ function openProjectCreator() {
   pathInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') doCreate();
     if (e.key === 'Escape') closeProjectCreator();
+  });
+}
+
+// --- Bulk project import ---
+// Two-step flow: (1) folder-pick a parent, (2) checklist of subfolders.
+// On confirm, push N entries into cfg.projects (one per checked subfolder,
+// name = basename, path = full) and broadcast a single config.update.
+//
+// Bypasses the existing per-project create flow precisely because that
+// flow's one-folder-at-a-time UX is what we're trying to escape — Lance's
+// projects all live under a single parent.
+let bulkImportContext = null;
+
+function openBulkImport() {
+  if (bulkImportContext) closeBulkImport();
+  openFolderPicker(state.cfg.defaultPath || '', (parentPath) => {
+    bulkImportContext = { parentPath };
+    send({ type: 'dirs.listSubdirs', path: parentPath });
+    // Render an empty modal so the user sees feedback while the server replies.
+    renderBulkImportModal({ path: parentPath, entries: null });
+  });
+}
+
+function closeBulkImport() {
+  const el = document.getElementById('bulk-import-modal');
+  if (el) el.remove();
+  bulkImportContext = null;
+}
+
+function handleBulkSubdirsResponse(msg) {
+  if (!bulkImportContext) return;
+  if (msg.path !== bulkImportContext.parentPath) return;
+  renderBulkImportModal(msg);
+}
+
+function renderBulkImportModal(msg) {
+  closeBulkImport(); // wipe the empty placeholder, then rehydrate
+  bulkImportContext = { parentPath: msg.path };
+
+  const modal = document.createElement('div');
+  modal.id = 'bulk-import-modal';
+  modal.className = 'fixed inset-0 z-[500] flex items-center justify-center bg-black/60 backdrop-blur-sm';
+
+  const entries = Array.isArray(msg.entries) ? msg.entries : null;
+  const hasEntries = entries && entries.length > 0;
+  const importable = entries ? entries.filter(e => !e.isProject) : [];
+
+  // Header + body shell. We render the list inline so the modal width stays
+  // stable through the loading -> loaded transition.
+  modal.innerHTML = `
+    <div class="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl shadow-black/60 w-[480px] max-w-[92vw] max-h-[80vh] flex flex-col">
+      <div class="px-5 py-4 border-b border-slate-700/60">
+        <div class="text-sm font-semibold text-slate-200">Import projects</div>
+        <div class="text-xs text-slate-500 mt-0.5 truncate" title="${esc(msg.path || '')}">${esc(msg.path || '')}</div>
+      </div>
+      <div class="px-5 py-3 border-b border-slate-700/40 flex items-center gap-3 ${entries ? '' : 'hidden'}">
+        <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+          <input type="checkbox" id="bi-select-all" class="accent-blue-500" ${importable.length ? 'checked' : ''} ${importable.length ? '' : 'disabled'}>
+          <span>Select all</span>
+        </label>
+        <span id="bi-count" class="ml-auto text-[11px] text-slate-500">${importable.length} importable</span>
+      </div>
+      <div id="bi-list" class="flex-1 overflow-y-auto tmx-scroll px-2 py-2">
+        ${entries === null
+          ? `<div class="p-6 text-center text-sm text-slate-500">Loading…</div>`
+          : !hasEntries
+            ? `<div class="p-6 text-center text-sm text-slate-500">No subfolders found.</div>`
+            : entries.map(e => {
+                const disabled = !!e.isProject;
+                return `
+                <label class="flex items-center gap-2.5 px-3 py-1.5 rounded hover:bg-slate-700/40 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : ''}">
+                  <input type="checkbox" class="bi-row accent-blue-500" data-name="${esc(e.name)}" data-full="${esc(e.full)}" ${disabled ? 'disabled' : 'checked'}>
+                  <span class="flex-1 text-sm text-slate-200 truncate" title="${esc(e.full)}">${esc(e.name)}</span>
+                  ${disabled ? `<span class="text-[10px] uppercase tracking-wider text-slate-500">already imported</span>` : ''}
+                </label>`;
+              }).join('')}
+      </div>
+      <div class="px-5 py-3 border-t border-slate-700/60 flex items-center justify-end gap-2">
+        <button id="bi-cancel" class="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+        <button id="bi-ok" class="px-4 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white rounded-md transition-colors disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed" ${importable.length ? '' : 'disabled'}>Import</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const updateCount = () => {
+    const n = modal.querySelectorAll('.bi-row:checked').length;
+    const okBtn = modal.querySelector('#bi-ok');
+    okBtn.disabled = n === 0;
+    const countEl = modal.querySelector('#bi-count');
+    if (countEl) countEl.textContent = `${n} selected`;
+  };
+
+  modal.querySelector('#bi-cancel').addEventListener('click', closeBulkImport);
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) closeBulkImport();
+  });
+  const selectAll = modal.querySelector('#bi-select-all');
+  if (selectAll) {
+    selectAll.addEventListener('change', () => {
+      for (const cb of modal.querySelectorAll('.bi-row:not(:disabled)')) cb.checked = selectAll.checked;
+      updateCount();
+    });
+  }
+  for (const cb of modal.querySelectorAll('.bi-row')) {
+    cb.addEventListener('change', updateCount);
+  }
+  modal.querySelector('#bi-ok').addEventListener('click', () => {
+    const picks = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({
+      name: cb.dataset.name,
+      full: cb.dataset.full,
+    }));
+    if (!picks.length) { closeBulkImport(); return; }
+    const projects = state.cfg.projects || [];
+    let added = 0;
+    for (const p of picks) {
+      projects.push({
+        id: crypto.randomUUID(),
+        name: p.name,
+        path: p.full,
+        color: PROJECT_COLORS[(projects.length + added) % PROJECT_COLORS.length],
+        collapsed: false,
+      });
+      added++;
+    }
+    state.cfg.projects = projects;
+    regroupSessions();
+    send({ type: 'config.update', config: state.cfg });
+    closeBulkImport();
   });
 }
 

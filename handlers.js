@@ -354,6 +354,7 @@ function onConnection(ws) {
       }
       case 'resize':               sessions.resize(msg); break;
       case 'rename':          sessions.rename(msg); break;
+      case 'resumable.rename': sessions.renameResumable(msg, cfg); break;
       case 'close':           sessions.close(msg, cfg); break;
 
       case 'config.get':
@@ -487,6 +488,36 @@ function onConnection(ws) {
         const entries = Array.isArray(result) ? result : [];
         const error = result.error || undefined;
         ws.send(JSON.stringify({ type: 'dirs', path: target, entries, error }));
+        break;
+      }
+
+      case 'dirs.listSubdirs': {
+        // Bulk project import: list immediate subdirectories of `path` and
+        // flag the ones already used by a configured project so the client
+        // can dim them in the picker. Comparison is case-insensitive on
+        // Windows (drive letters and the like).
+        const target = msg.path || cfg.defaultPath;
+        const result = listDirs(target, !!msg.showHidden);
+        const names = Array.isArray(result) ? result : [];
+        const error = result.error || undefined;
+        const norm = (p) => {
+          if (!p) return '';
+          let s = p.replace(/\//g, '\\').replace(/\\+$/, '');
+          if (process.platform === 'win32') s = s.toLowerCase();
+          return s;
+        };
+        const projectPaths = new Set(
+          (cfg.projects || [])
+            .map(p => norm(p?.path))
+            .filter(Boolean),
+        );
+        const sep = target.includes('\\') ? '\\' : '/';
+        const base = target.endsWith(sep) ? target : target + sep;
+        const entries = names.map(name => {
+          const full = base + name;
+          return { name, full, isProject: projectPaths.has(norm(full)) };
+        });
+        ws.send(JSON.stringify({ type: 'dirs.subdirs', path: target, entries, error }));
         break;
       }
 
