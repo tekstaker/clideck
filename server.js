@@ -313,23 +313,25 @@ function onShutdown() {
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
 
-// In-process restart: spawn a fresh clideck as a detached child, then
-// gracefully tear this one down. The browser's existing WebSocket
-// reconnect loop in app.js handles the disconnect/reconnect window —
-// the user sees a "Restarting…" toast that gets cleared once the new
-// process announces itself with a different bootId.
+// In-process restart, wrapper-coordinated:
 //
-// Two failure modes the first cut of this code hit, both fixed below:
+//   [this clideck]  ──spawns──>  [lib/restart-wrapper.js]  ──spawns──>  [new clideck]
+//          │                            │                                     │
+//          └─exits via onShutdown───────┘                                     │
+//                                       │                                     │
+//                                       └─waits for parent exit + port free──┘
+//                                       └─waits for new clideck to bind, then exits 0
 //
-// 1. EADDRINUSE race: the child wakes up before the parent's
-//    `process.exit()` releases port 4000 and dies on `server.listen()`.
-//    Fixed by the retry-listen loop further down — listen retries on
-//    EADDRINUSE for ~6s before giving up.
+// The wrapper is the neutral observer: a 5KB script with no plugins,
+// no PTYs, no WSS. It can't hang on any of the things clideck can hang
+// on. By spawning the new clideck from the wrapper rather than from us
+// directly, the new clideck isn't entangled in our death sequence — it
+// has a clean parent that exits cleanly when its job is done.
 //
-// 2. Silent child death: `stdio: 'ignore'` swallowed every error the
-//    child wrote on its way out. Fixed by piping child stdout/stderr to
-//    a rotating log under DATA_DIR/restart.log, so a failed restart now
-//    leaves a forensic trail instead of disappearing into the void.
+// The browser's existing WebSocket reconnect loop in app.js handles
+// the disconnect/reconnect window — the user sees a "Restarting…" toast
+// that gets cleared once the new process announces itself with a
+// different bootId.
 //
 // The 200ms broadcast→shutdown delay gives in-flight `server.restarting`
 // messages time to reach every client before we kill their sockets.
@@ -369,31 +371,35 @@ function requestRestart() {
     process.exit(1);
   }, 3000);
   setTimeout(() => {
-    console.log('[restart] 200ms elapsed — spawning replacement child');
+    console.log('[restart] 200ms elapsed — spawning restart wrapper');
     try {
       const { spawn } = require('child_process');
       const logFd = openRestartLog();
-      // process.argv[0] is the absolute path to the node binary and
-      // [1] is bin/clideck.js. Both are concrete files — calling spawn
-      // without `shell: true` so detached + stdio routing on Windows
-      // doesn't spin up a cmd.exe console wrapper that immediately exits
-      // and kills the real child along with it.
-      //
-      // windowsHide stops a transient console window appearing on Win
-      // when no shell is in the chain.
-      //
-      // Child stdout/stderr point at the restart.log fd so anything the
-      // replacement prints on its way up (or its way to crashing) is
-      // preserved. The fd survives parent exit because the child
-      // inherits it.
-      const child = spawn(process.argv[0], process.argv.slice(1), {
+      // Instead of spawning the replacement clideck directly, we spawn a
+      // tiny neutral wrapper (lib/restart-wrapper.js). The wrapper waits
+      // for THIS process to exit, waits for the port to be free, then
+      // spawns the new clideck and exits once it's verified listening.
+      // Two big wins over the direct-spawn pattern:
+      //   1. The new clideck is the wrapper's child, not ours — so it
+      //      isn't entangled with our death sequence (Windows console
+      //      ownership, job objects, the works).
+      //   2. The wrapper is the neutral observer: if the handoff fails
+      //      partway, restart.log captures exactly which stage broke.
+      const wrapperPath = join(__dirname, 'lib', 'restart-wrapper.js');
+      const wrapperEnv = {
+        ...process.env,
+        CLIDECK_RESTART_PARENT_PID: String(process.pid),
+        CLIDECK_RESTART_PORT: String(PORT),
+        CLIDECK_RESTART_ARGV: JSON.stringify(process.argv),
+      };
+      const child = spawn(process.argv[0], [wrapperPath], {
         detached: true,
         stdio: ['ignore', logFd || 'ignore', logFd || 'ignore'],
-        env: process.env,
+        env: wrapperEnv,
         windowsHide: true,
       });
       child.unref();
-      console.log('[restart] spawned replacement child PID=' + child.pid + ' (log → ~/.clideck/restart.log)');
+      console.log('[restart] spawned restart wrapper PID=' + child.pid + ' (log → ~/.clideck/restart.log)');
       if (logFd != null) {
         try { require('fs').closeSync(logFd); } catch { /* child still holds it */ }
       }
