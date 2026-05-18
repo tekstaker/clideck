@@ -40,7 +40,10 @@ let restartPending = false;
 // for this because that frame can be dropped on process.exit before
 // reaching the wire (the Windows-specific failure mode behind the bug in
 // 7f33cbf v1).
-window.addEventListener('clideck:restart-requested', () => { restartPending = true; });
+window.addEventListener('clideck:restart-requested', () => {
+  restartPending = true;
+  console.log('[restart] restartPending=true (click signal)');
+});
 
 function clearHeartbeat() {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
@@ -64,9 +67,11 @@ function startHeartbeat() {
 
 function connect() {
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (restartPending) console.log('[restart] connect() called (pending restart) → ws://' + location.host);
   state.ws = new WebSocket(`${wsProtocol}//${location.host}`);
 
   state.ws.onopen = () => {
+    if (restartPending) console.log('[restart] ws opened — awaiting config with new bootId');
     reconnectReplaySkip = new Set(state.terms.keys());
     if (lastDropToastId) {
       showToast('Reconnected', { id: lastDropToastId, type: 'success', duration: 2000 });
@@ -84,10 +89,12 @@ function connect() {
         break;
       case 'config': {
         const incomingBootId = msg.config?.bootId || null;
+        console.log('[restart] config arrived bootId=' + incomingBootId + ' (prev=' + lastServerBootId + ', restartPending=' + restartPending + ')');
         if (lastServerBootId && incomingBootId && incomingBootId !== lastServerBootId && restartPending) {
           // A different process is answering — restart confirmed up.
           // Replace the sticky warn toast with a transient success and
           // reset the restart button so the user can do it again.
+          console.log('[restart] bootId changed + restart was pending → swapping toast + resetting button');
           showToast(`Reloaded — clideck v${msg.config.version || ''}`.trim(), {
             id: 'server-restarting',
             type: 'success',
@@ -167,6 +174,7 @@ function connect() {
         // "reconnecting…" toast; both can coexist. The sticky toast
         // here is swapped for a success confirmation once the post-
         // reconnect `config` arrives with a different bootId.
+        console.log('[restart] server.restarting broadcast received');
         restartPending = true;
         showToast('Restarting clideck — page will reconnect automatically.', {
           duration: 0,
@@ -429,7 +437,8 @@ function connect() {
     }
   };
 
-  state.ws.onclose = () => {
+  state.ws.onclose = (ev) => {
+    if (restartPending) console.log('[restart] ws closed (code=' + ev.code + ', reason=' + (ev.reason || '') + ') → reconnect in 1s');
     clearHeartbeat();
     if (!lastDropToastId) {
       lastDropToastId = `ws-reconnect-${Date.now()}`;

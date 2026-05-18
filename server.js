@@ -345,8 +345,10 @@ function openRestartLog() {
 }
 
 function requestRestart() {
+  console.log('[restart] requestRestart() — broadcasting server.restarting');
   try { sessions.broadcast({ type: 'server.restarting' }); } catch { /* noop */ }
   setTimeout(() => {
+    console.log('[restart] 200ms elapsed — spawning replacement child');
     try {
       const { spawn } = require('child_process');
       const logFd = openRestartLog();
@@ -370,12 +372,14 @@ function requestRestart() {
         windowsHide: true,
       });
       child.unref();
+      console.log('[restart] spawned replacement child PID=' + child.pid + ' (log → ~/.clideck/restart.log)');
       if (logFd != null) {
         try { require('fs').closeSync(logFd); } catch { /* child still holds it */ }
       }
     } catch (e) {
       console.error('[restart] failed to spawn replacement:', e.message);
     }
+    console.log('[restart] calling onShutdown() — parent exiting');
     onShutdown();
   }, 200);
 }
@@ -408,6 +412,8 @@ function onListenError(err) {
 }
 function onListenOk() {
   const v = require('./package.json').version;
+  const { BOOT_ID } = require('./runtime');
+  console.log(`[restart] booted v${v} pid=${process.pid} bootId=${BOOT_ID} on ${HOST}:${PORT}`);
   const url = localUrl();
   const clickableUrl = terminalLink(url);
   const urlHint = openUrlHint();
