@@ -77,14 +77,14 @@ function checkRemoteUpdate(ws) {
     return;
   }
   const shellOpt = process.platform === 'win32';
-  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
+  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err, stdout) => {
     let installed;
     try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; }
     catch {
       ws.send(JSON.stringify({ type: 'remote.update', available: false, checked: false }));
       return;
     }
-    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, timeout: 10000 }, (err2, stdout2) => {
+    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err2, stdout2) => {
       if (err2) {
         ws.send(JSON.stringify({ type: 'remote.update', installed, available: false, checked: false }));
         return;
@@ -472,7 +472,7 @@ function onConnection(ws) {
           : process.platform === 'win32'
             ? 'explorer'
             : 'xdg-open';
-        execFile(cmd, [proj.path], { shell: process.platform === 'win32' }, (err) => {
+        execFile(cmd, [proj.path], { shell: process.platform === 'win32', windowsHide: true }, (err) => {
           ws.send(JSON.stringify({
             type: 'project.openPath.result',
             id: msg.id,
@@ -573,7 +573,7 @@ function onConnection(ws) {
         let installed = false;
         try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore' }); installed = true; } catch {}
         if (!installed) { ws.send(JSON.stringify({ type: 'remote.status', installed: false })); break; }
-        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err, stdout) => {
+        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
           if (err) { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); return; }
           try { ws.send(JSON.stringify({ type: 'remote.status', installed: true, ...JSON.parse(stdout) })); }
           catch { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); }
@@ -583,7 +583,7 @@ function onConnection(ws) {
       }
 
       case 'remote.pair': {
-        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err, stdout) => {
+        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
           if (err) { ws.send(JSON.stringify({ type: 'remote.error', error: err.message })); return; }
           try { ws.send(JSON.stringify({ type: 'remote.paired', ...JSON.parse(stdout) })); }
           catch { ws.send(JSON.stringify({ type: 'remote.error', error: 'Invalid response from clideck-remote' })); }
@@ -592,7 +592,7 @@ function onConnection(ws) {
       }
 
       case 'remote.unpair': {
-        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err) => {
+        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err) => {
           if (err) {
             ws.send(JSON.stringify({ type: 'remote.error', error: err.message }));
           } else {
@@ -609,7 +609,7 @@ function onConnection(ws) {
 
       case 'remote.install': {
         const proc = require('child_process').spawn('npm', ['install', '-g', 'clideck-remote'], {
-          shell: true, stdio: ['ignore', 'pipe', 'pipe'],
+          shell: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
         proc.stdout.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
         proc.stderr.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));

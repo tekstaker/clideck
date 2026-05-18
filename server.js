@@ -23,7 +23,7 @@ function checkSelfUpdate() {
     // Skip in non-interactive or local dev contexts
     if (!process.stdin.isTTY || !process.stdout.isTTY) return ok();
     if (!__dirname.includes(join('node_modules', 'clideck'))) return ok();
-    execFile('npm', ['view', 'clideck', 'version'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
+    execFile('npm', ['view', 'clideck', 'version'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err, stdout) => {
       if (err) return ok();
       const latest = stdout.trim();
       if (!latest || latest === currentVersion) return ok();

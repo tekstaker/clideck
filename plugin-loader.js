@@ -2,8 +2,9 @@ const { readdirSync, readFileSync, existsSync, mkdirSync, cpSync, rmSync } = req
 const { createHash } = require('crypto');
 const { join, sep } = require('path');
 const { execFile: _execFile } = require('child_process');
-// Windows needs shell:true for npm (it's npm.cmd, not a binary)
-const npmExec = (args, opts, cb) => _execFile('npm', args, { ...opts, shell: process.platform === 'win32' }, cb);
+// Windows needs shell:true for npm (it's npm.cmd, not a binary). windowsHide
+// stops the cmd.exe wrapper from flashing a console window every invocation.
+const npmExec = (args, opts, cb) => _execFile('npm', args, { ...opts, shell: process.platform === 'win32', windowsHide: true }, cb);
 const { DATA_DIR } = require('./paths');
 const transcript = require('./transcript');
 
