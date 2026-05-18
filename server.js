@@ -303,34 +303,76 @@ process.on('SIGTERM', onShutdown);
 // In-process restart: spawn a fresh clideck as a detached child, then
 // gracefully tear this one down. The browser's existing WebSocket
 // reconnect loop in app.js handles the disconnect/reconnect window —
-// the user sees a "Reconnecting…" toast and then the page reattaches
-// automatically once the child binds the same port.
+// the user sees a "Restarting…" toast that gets cleared once the new
+// process announces itself with a different bootId.
+//
+// Two failure modes the first cut of this code hit, both fixed below:
+//
+// 1. EADDRINUSE race: the child wakes up before the parent's
+//    `process.exit()` releases port 4000 and dies on `server.listen()`.
+//    Fixed by the retry-listen loop further down — listen retries on
+//    EADDRINUSE for ~6s before giving up.
+//
+// 2. Silent child death: `stdio: 'ignore'` swallowed every error the
+//    child wrote on its way out. Fixed by piping child stdout/stderr to
+//    a rotating log under DATA_DIR/restart.log, so a failed restart now
+//    leaves a forensic trail instead of disappearing into the void.
 //
 // The 200ms broadcast→shutdown delay gives in-flight `server.restarting`
 // messages time to reach every client before we kill their sockets.
 // node-pty PTYs in this process are torn down by sessions.shutdown(),
 // which also persists the resumable list so it survives the restart.
+function openRestartLog() {
+  try {
+    const fs = require('fs');
+    const { DATA_DIR } = require('./paths');
+    const logPath = join(DATA_DIR, 'restart.log');
+    // One-generation rotation: if the current log is >1MB, roll it to
+    // restart.log.1 (overwriting any prior generation) before opening
+    // fresh. Keeps disk use bounded without needing a real log lib.
+    try {
+      const st = fs.statSync(logPath);
+      if (st.size > 1024 * 1024) {
+        try { fs.renameSync(logPath, logPath + '.1'); } catch { /* noop */ }
+      }
+    } catch { /* file doesn't exist yet — fine */ }
+    const fd = fs.openSync(logPath, 'a');
+    fs.writeSync(fd, `\n[${new Date().toISOString()}] parent ${process.pid} requesting restart\n`);
+    return fd;
+  } catch {
+    return null;
+  }
+}
+
 function requestRestart() {
   try { sessions.broadcast({ type: 'server.restarting' }); } catch { /* noop */ }
   setTimeout(() => {
     try {
       const { spawn } = require('child_process');
+      const logFd = openRestartLog();
       // process.argv[0] is the absolute path to the node binary and
       // [1] is bin/clideck.js. Both are concrete files — calling spawn
-      // without `shell: true` so detached + stdio: 'ignore' on Windows
+      // without `shell: true` so detached + stdio routing on Windows
       // doesn't spin up a cmd.exe console wrapper that immediately exits
-      // and kills the real child along with it. Linux/macOS likewise
-      // don't need a shell for this.
+      // and kills the real child along with it.
       //
       // windowsHide stops a transient console window appearing on Win
       // when no shell is in the chain.
+      //
+      // Child stdout/stderr point at the restart.log fd so anything the
+      // replacement prints on its way up (or its way to crashing) is
+      // preserved. The fd survives parent exit because the child
+      // inherits it.
       const child = spawn(process.argv[0], process.argv.slice(1), {
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', logFd || 'ignore', logFd || 'ignore'],
         env: process.env,
         windowsHide: true,
       });
       child.unref();
+      if (logFd != null) {
+        try { require('fs').closeSync(logFd); } catch { /* child still holds it */ }
+      }
     } catch (e) {
       console.error('[restart] failed to spawn replacement:', e.message);
     }
@@ -339,7 +381,32 @@ function requestRestart() {
 }
 module.exports = { requestRestart };
 
-server.listen(PORT, HOST, () => {
+// Retry the bind for ~6s on EADDRINUSE. The in-UI restart spawns a
+// replacement clideck before the parent's process.exit() has released
+// the port; without this retry the child would die on first bind and
+// disappear silently (Windows holds the port slightly longer than the
+// 200ms broadcast→exit delay accounts for). Any other listen error is
+// fatal and exits 1.
+const LISTEN_RETRY_LIMIT = 30;
+const LISTEN_RETRY_DELAY_MS = 200;
+let listenAttempt = 0;
+function tryListen() {
+  server.once('error', onListenError);
+  server.listen(PORT, HOST, onListenOk);
+}
+function onListenError(err) {
+  if (err.code === 'EADDRINUSE' && listenAttempt < LISTEN_RETRY_LIMIT) {
+    listenAttempt++;
+    if (listenAttempt === 1) {
+      console.log(`\x1b[38;5;245m  ▸ port ${PORT} busy — waiting for previous clideck to release it…\x1b[0m`);
+    }
+    setTimeout(tryListen, LISTEN_RETRY_DELAY_MS);
+    return;
+  }
+  console.error(`[clideck] failed to bind ${HOST}:${PORT}: ${err.message}`);
+  process.exit(1);
+}
+function onListenOk() {
   const v = require('./package.json').version;
   const url = localUrl();
   const clickableUrl = terminalLink(url);
@@ -361,6 +428,7 @@ server.listen(PORT, HOST, () => {
 \x1b[38;5;252m  ▸ Ready at \x1b[38;5;44m${clickableUrl}\x1b[38;5;245m (${urlHint})\x1b[0m
 \x1b[38;5;245m  ▸ Stop with \x1b[38;5;252mCtrl+C\x1b[38;5;245m · Restart anytime with \x1b[38;5;252mclideck\x1b[0m
 ${HOST !== '127.0.0.1' ? '\x1b[38;5;208m  ▸ Warning: listening on ' + HOST + ' — no authentication, anyone on the network can connect\x1b[0m\n' : ''}`);
-});
+}
+tryListen();
 
 }); // checkSelfUpdate

@@ -28,6 +28,19 @@ const PONG_TIMEOUT_MS = 10000;
 let heartbeatTimer = null;
 let pongTimer = null;
 let lastDropToastId = null;
+// Tracks the per-process bootId broadcast by the server in `config`. When it
+// changes (a different value than the one we previously stored), a different
+// clideck process is answering — i.e. the in-UI Restart actually landed. We
+// use that signal to swap the sticky "Restarting…" toast for a confirmation
+// instead of guessing from the socket reopen alone.
+let lastServerBootId = null;
+let restartPending = false;
+// settings.js fires this on click — authoritative signal that a restart was
+// requested. We do NOT rely on the server's `server.restarting` broadcast
+// for this because that frame can be dropped on process.exit before
+// reaching the wire (the Windows-specific failure mode behind the bug in
+// 7f33cbf v1).
+window.addEventListener('clideck:restart-requested', () => { restartPending = true; });
 
 function clearHeartbeat() {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
@@ -69,7 +82,24 @@ function connect() {
       case 'pong':
         if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
         break;
-      case 'config':
+      case 'config': {
+        const incomingBootId = msg.config?.bootId || null;
+        if (lastServerBootId && incomingBootId && incomingBootId !== lastServerBootId && restartPending) {
+          // A different process is answering — restart confirmed up.
+          // Replace the sticky warn toast with a transient success and
+          // reset the restart button so the user can do it again.
+          showToast(`Reloaded — clideck v${msg.config.version || ''}`.trim(), {
+            id: 'server-restarting',
+            type: 'success',
+            duration: 2500,
+          });
+          const btn = document.getElementById('btn-server-restart');
+          if (btn) { btn.disabled = false; btn.textContent = 'Restart clideck'; }
+          const restartStatus = document.getElementById('server-restart-status');
+          if (restartStatus) restartStatus.textContent = '';
+          restartPending = false;
+        }
+        if (incomingBootId) lastServerBootId = incomingBootId;
         state.cfg = msg.config;
         applyMode(state.cfg.colorMode || 'dark');
         regroupSessions();
@@ -78,6 +108,7 @@ function connect() {
         refreshCreator();
         for (const [, entry] of state.terms) applyTheme(entry.term, entry.themeId);
         break;
+      }
       case 'themes':
         state.themes = msg.themes;
         renderSettings();
@@ -133,7 +164,10 @@ function connect() {
         // Surface a sticky toast so every connected client knows what's
         // about to happen. The existing onclose reconnect loop will pick
         // up the disconnect ~200ms later and show its own
-        // "reconnecting…" toast; both can coexist.
+        // "reconnecting…" toast; both can coexist. The sticky toast
+        // here is swapped for a success confirmation once the post-
+        // reconnect `config` arrives with a different bootId.
+        restartPending = true;
         showToast('Restarting clideck — page will reconnect automatically.', {
           duration: 0,
           id: 'server-restarting',

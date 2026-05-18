@@ -621,5 +621,11 @@ document.getElementById('btn-server-restart').addEventListener('click', async ()
   btn.disabled = true;
   btn.textContent = 'Restarting…';
   if (status) status.textContent = 'sending restart request';
+  // Notify app.js that a restart is intended so it can swap the toast and
+  // reset this button once a new bootId arrives. We don't rely on the
+  // server's `server.restarting` broadcast for this — that frame races
+  // with process.exit() and can be dropped before reaching the wire on
+  // Windows.
+  window.dispatchEvent(new Event('clideck:restart-requested'));
   send({ type: 'server.restart' });
 });

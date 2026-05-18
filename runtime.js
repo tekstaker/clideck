@@ -26,4 +26,10 @@ function localUrl(host = HOST, port = PORT) {
   return `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
 }
 
-module.exports = { PORT, HOST, localUrl };
+// Fresh per-process identifier. Surfaced to clients in the `config`
+// broadcast so a reconnecting browser can tell a different process
+// answered (used by the in-UI restart flow to confirm the replacement
+// is up rather than guessing from the socket reopen alone).
+const BOOT_ID = require('crypto').randomUUID();
+
+module.exports = { PORT, HOST, localUrl, BOOT_ID };

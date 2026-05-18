@@ -7,7 +7,7 @@ const sessions = require('./sessions');
 const themes = require('./themes');
 const presets = JSON.parse(readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
 const { listDirs, binName, defaultShell } = require('./utils');
-const { PORT } = require('./runtime');
+const { PORT, BOOT_ID } = require('./runtime');
 for (const p of presets) if (p.presetId === 'shell') p.command = defaultShell;
 function isPresetEnabled(preset) {
   if (!preset?.enabledIfEnv) return true;
@@ -240,7 +240,7 @@ function detectTelemetryConfig(c) {
 const appVersion = require('./package.json').version;
 
 function configForClient() {
-  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion };
+  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion, bootId: BOOT_ID };
 }
 
 function remoteCliEnv() {
