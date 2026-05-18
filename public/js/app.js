@@ -129,6 +129,18 @@ function connect() {
       case 'closed':
         removeTerminal(msg.id);
         break;
+      case 'server.restarting': {
+        // Surface a sticky toast so every connected client knows what's
+        // about to happen. The existing onclose reconnect loop will pick
+        // up the disconnect ~200ms later and show its own
+        // "reconnecting…" toast; both can coexist.
+        showToast('Restarting clideck — page will reconnect automatically.', {
+          duration: 0,
+          id: 'server-restarting',
+          type: 'warn',
+        });
+        break;
+      }
       case 'session.recovered': {
         // The server tried to resume a dormant session, the underlying
         // agent couldn't find that conversation, so it spawned a fresh

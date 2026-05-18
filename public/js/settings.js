@@ -1,6 +1,7 @@
 import { state, send } from './state.js';
 import { esc, debounce, agentIcon, binName } from './utils.js';
 import { openFolderPicker } from './folder-picker.js';
+import { confirmClose } from './confirm.js';
 
 // ── Category navigation ──
 
@@ -602,4 +603,23 @@ document.getElementById('btn-browse-path').addEventListener('click', () => {
     document.getElementById('cfg-default-path').value = path;
     saveConfig();
   });
+});
+
+// ── Restart clideck server ──
+// Sends `server.restart` to the running process, which spawns a detached
+// child with the same argv before tearing itself down. The browser's
+// reconnect loop handles the disconnect window so the user lands back
+// on the same page once the new process binds the port.
+document.getElementById('btn-server-restart').addEventListener('click', async () => {
+  const ok = await confirmClose(
+    'Restart clideck? All active terminals will be closed cleanly; resumable sessions are preserved.',
+    'Restart',
+  );
+  if (!ok) return;
+  const btn = document.getElementById('btn-server-restart');
+  const status = document.getElementById('server-restart-status');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  if (status) status.textContent = 'sending restart request';
+  send({ type: 'server.restart' });
 });

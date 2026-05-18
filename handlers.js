@@ -356,6 +356,7 @@ function onConnection(ws) {
       case 'rename':          sessions.rename(msg); break;
       case 'resumable.rename': sessions.renameResumable(msg, cfg); break;
       case 'close':           sessions.close(msg, cfg); break;
+      case 'server.restart':  require('./server.js').requestRestart(); break;
 
       case 'config.get':
         ws.send(JSON.stringify({ type: 'config', config: configForClient() }));

@@ -300,6 +300,45 @@ function onShutdown() {
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
 
+// In-process restart: spawn a fresh clideck as a detached child, then
+// gracefully tear this one down. The browser's existing WebSocket
+// reconnect loop in app.js handles the disconnect/reconnect window —
+// the user sees a "Reconnecting…" toast and then the page reattaches
+// automatically once the child binds the same port.
+//
+// The 200ms broadcast→shutdown delay gives in-flight `server.restarting`
+// messages time to reach every client before we kill their sockets.
+// node-pty PTYs in this process are torn down by sessions.shutdown(),
+// which also persists the resumable list so it survives the restart.
+function requestRestart() {
+  try { sessions.broadcast({ type: 'server.restarting' }); } catch { /* noop */ }
+  setTimeout(() => {
+    try {
+      const { spawn } = require('child_process');
+      // process.argv[0] is the absolute path to the node binary and
+      // [1] is bin/clideck.js. Both are concrete files — calling spawn
+      // without `shell: true` so detached + stdio: 'ignore' on Windows
+      // doesn't spin up a cmd.exe console wrapper that immediately exits
+      // and kills the real child along with it. Linux/macOS likewise
+      // don't need a shell for this.
+      //
+      // windowsHide stops a transient console window appearing on Win
+      // when no shell is in the chain.
+      const child = spawn(process.argv[0], process.argv.slice(1), {
+        detached: true,
+        stdio: 'ignore',
+        env: process.env,
+        windowsHide: true,
+      });
+      child.unref();
+    } catch (e) {
+      console.error('[restart] failed to spawn replacement:', e.message);
+    }
+    onShutdown();
+  }, 200);
+}
+module.exports = { requestRestart };
+
 server.listen(PORT, HOST, () => {
   const v = require('./package.json').version;
   const url = localUrl();
