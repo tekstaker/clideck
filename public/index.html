@@ -131,8 +131,11 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
 </head>
 <body class="flex h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
-  <!-- Always-visible build tag (lower-left). pointer-events-none so it doesn't block clicks on the nav rail it sits over. -->
-  <div id="app-version-tag" class="fixed bottom-1 left-1.5 text-[9px] text-slate-600 pointer-events-none select-none z-50 font-mono leading-none"></div>
+  <!-- Always-visible connection lozenge (lower-left). pointer-events-none so it doesn't block clicks on the nav rail it sits over. Color/text driven by app.js; green when WebSocket is OPEN, red when not. -->
+  <div id="app-status-badge" class="fixed bottom-1.5 left-1.5 z-50 select-none pointer-events-none px-2.5 py-1 rounded-full text-[10px] font-mono leading-none flex items-center gap-1.5 bg-slate-800/80 border border-slate-700/60 text-slate-400 backdrop-blur-sm transition-colors duration-200">
+    <span id="app-status-dot" class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+    <span id="app-status-text">connecting…</span>
+  </div>
   <div id="mobile-sidebar-backdrop" aria-hidden="true"></div>
 
   <div id="sidebar-shell">

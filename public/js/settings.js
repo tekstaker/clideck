@@ -95,11 +95,10 @@ export function updateVersionFooter() {
   if (el) el.textContent = state.cfg.version || '';
   const remoteEl = document.getElementById('version-remote');
   if (remoteEl) remoteEl.textContent = state.remoteVersion || '';
-  // Always-visible build tag in the lower-left corner. Lives outside
-  // any panel so a quick glance confirms which build is running without
-  // opening Settings.
-  const tagEl = document.getElementById('app-version-tag');
-  if (tagEl) tagEl.textContent = state.cfg.version ? `v${state.cfg.version}` : '';
+  // The lower-left build tag is now part of the connection lozenge
+  // (see app.js setStatusBadge). Just nudge it to re-render with the
+  // freshest version string.
+  if (typeof window.__refreshStatusBadge === 'function') window.__refreshStatusBadge();
 }
 
 // ── CLI Agents ──

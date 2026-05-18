@@ -35,6 +35,47 @@ let lastDropToastId = null;
 // instead of guessing from the socket reopen alone.
 let lastServerBootId = null;
 let restartPending = false;
+
+// ── Connection lozenge (lower-left of the page) ──
+// Lance asked for an unambiguous "am I connected?" indicator with uptime
+// + version. Green when the WebSocket is OPEN, red when not. Flips
+// instantly on ws.onopen/onclose; a 1s tick keeps the uptime string
+// fresh without polling the server.
+let connectedAt = null;
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60)   return `${s}s`;
+  const m = Math.floor(s / 60), rem = s % 60;
+  if (m < 60)   return `${m}m ${rem}s`;
+  const h = Math.floor(m / 60), mrem = m % 60;
+  return `${h}h ${mrem}m`;
+}
+function renderStatusBadge() {
+  const badge = document.getElementById('app-status-badge');
+  const dot   = document.getElementById('app-status-dot');
+  const text  = document.getElementById('app-status-text');
+  if (!badge || !dot || !text) return;
+  const open = state.ws && state.ws.readyState === WebSocket.OPEN && connectedAt;
+  const v    = state.cfg?.version ? `v${state.cfg.version}` : '';
+  badge.classList.remove(
+    'bg-slate-800/80', 'border-slate-700/60', 'text-slate-400',
+    'bg-emerald-900/50', 'border-emerald-700/50', 'text-emerald-300',
+    'bg-red-900/50', 'border-red-700/50', 'text-red-300',
+  );
+  dot.classList.remove('bg-slate-500', 'bg-emerald-400', 'bg-red-400', 'animate-pulse');
+  if (open) {
+    badge.classList.add('bg-emerald-900/50', 'border-emerald-700/50', 'text-emerald-300');
+    dot.classList.add('bg-emerald-400');
+    const up = fmtUptime(Date.now() - connectedAt);
+    text.textContent = `connected · ${up}${v ? ' · ' + v : ''}`;
+  } else {
+    badge.classList.add('bg-red-900/50', 'border-red-700/50', 'text-red-300');
+    dot.classList.add('bg-red-400', 'animate-pulse');
+    text.textContent = restartPending ? 'restarting…' : 'disconnected · reconnecting…';
+  }
+}
+window.__refreshStatusBadge = renderStatusBadge;
+setInterval(renderStatusBadge, 1000);
 // settings.js fires this on click — authoritative signal that a restart was
 // requested. We do NOT rely on the server's `server.restarting` broadcast
 // for this because that frame can be dropped on process.exit before
@@ -72,6 +113,8 @@ function connect() {
 
   state.ws.onopen = () => {
     if (restartPending) console.log('[restart] ws opened — awaiting config with new bootId');
+    connectedAt = Date.now();
+    renderStatusBadge();
     reconnectReplaySkip = new Set(state.terms.keys());
     if (lastDropToastId) {
       showToast('Reconnected', { id: lastDropToastId, type: 'success', duration: 2000 });
@@ -439,6 +482,8 @@ function connect() {
 
   state.ws.onclose = (ev) => {
     if (restartPending) console.log('[restart] ws closed (code=' + ev.code + ', reason=' + (ev.reason || '') + ') → reconnect in 1s');
+    connectedAt = null;
+    renderStatusBadge();
     clearHeartbeat();
     if (!lastDropToastId) {
       lastDropToastId = `ws-reconnect-${Date.now()}`;

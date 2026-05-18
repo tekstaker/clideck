@@ -284,17 +284,30 @@ const wss = new WebSocketServer({
   },
 });
 wss.on('connection', onConnection);
+// Without this listener, the WebSocketServer rethrows any error emitted by
+// the underlying http server — including EADDRINUSE during listen. That
+// rethrow crashes the process before tryListen's retry loop has a chance
+// to fire, which is what broke the in-UI restart on 2026-05-18 with PID
+// 12980 holding the port and child PID 40804 dying immediately. Logging
+// the error is enough — onListenError below handles the actual retry and
+// any post-bind socket error from the WSS side is informational.
+wss.on('error', (err) => {
+  console.error('[wss] error:', err.code || err.message);
+});
 
 const activity = require('./activity');
 activity.start(sessions.getSessions(), sessions.broadcast);
 sessions.startAutoSave(() => require('./handlers').getConfig());
 
-// Graceful shutdown: persist sessions before exit
+// Graceful shutdown: persist sessions before exit. Each step is isolated in
+// its own try/catch so one stuck step (e.g. a node-pty.kill() that won't
+// return) can't prevent process.exit() from running and releasing port
+// 4000 — which is what stranded PID 12980 on 2026-05-18.
 const { getConfig } = require('./handlers');
 function onShutdown() {
-  plugins.shutdown();
-  activity.stop();
-  sessions.shutdown(getConfig());
+  try { plugins.shutdown(); }            catch (e) { console.error('[shutdown] plugins:',  e.message); }
+  try { activity.stop(); }               catch (e) { console.error('[shutdown] activity:', e.message); }
+  try { sessions.shutdown(getConfig()); } catch (e) { console.error('[shutdown] sessions:', e.message); }
   process.exit(0);
 }
 process.on('SIGINT', onShutdown);
@@ -347,6 +360,14 @@ function openRestartLog() {
 function requestRestart() {
   console.log('[restart] requestRestart() — broadcasting server.restarting');
   try { sessions.broadcast({ type: 'server.restarting' }); } catch { /* noop */ }
+  // Hard-exit watchdog: if anything in onShutdown's call chain hangs
+  // synchronously (a stubborn PTY, a plugin's shutdown handler, etc.),
+  // the parent never releases port 4000 and the child fails EADDRINUSE
+  // forever. After 3s of "we should be gone by now", force exit.
+  setTimeout(() => {
+    console.error('[restart] shutdown watchdog tripped at 3s — forcing process.exit(1)');
+    process.exit(1);
+  }, 3000);
   setTimeout(() => {
     console.log('[restart] 200ms elapsed — spawning replacement child');
     try {
