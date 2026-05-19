@@ -3,6 +3,8 @@ created: 2026-05-19T11:34:00Z
 title: Sync select-all checkbox with row state in bulk-import modal
 area: ui
 phase_hint: 2026-05-17-session-ux
+ingested_into: .planning/2026-05-17-session-ux/SPEC.md (acceptance criterion 7)
+ingested_at: 2026-05-19
 files:
   - public/js/app.js:1126
   - public/js/app.js:1175-1178

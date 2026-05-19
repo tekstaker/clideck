@@ -3,6 +3,8 @@ created: 2026-05-19T11:52:00Z
 title: Make URLs in terminal output Ctrl+clickable to open in a new tab
 area: ui
 phase_hint: 2026-05-19-terminal-ux
+ingested_into: .planning/2026-05-19-terminal-ux/SPEC.md (deliverable 2)
+ingested_at: 2026-05-19
 files:
   - public/js/terminals.js:520
   - public/index.html

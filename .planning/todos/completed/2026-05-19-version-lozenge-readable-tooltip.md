@@ -3,6 +3,8 @@ created: 2026-05-19T11:41:00Z
 title: Add readable tooltip on lower-left version lozenge
 area: ui
 phase_hint: 2026-05-18-restart-architecture
+ingested_into: .planning/2026-05-18-restart-architecture/SPEC.md (deliverable 5)
+ingested_at: 2026-05-19
 files:
   - public/index.html:135
   - public/js/app.js:53-76

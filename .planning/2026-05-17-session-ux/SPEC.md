@@ -24,6 +24,13 @@ longer use:
    subdirectories with checkboxes (incl. select-all). One click creates
    N projects whose name defaults to the folder name and whose `path` is
    the subfolder.
+4. **Close-out fix on bulk import.** The "Select all" master checkbox in
+   the bulk-import modal does not reflect the actual row selection
+   state. On open, all rows are pre-selected but the master renders
+   unticked; toggling individual rows does not update the master either.
+   This is a follow-up bug found after the bulk-import deliverable
+   shipped — folded into this phase as a close-out fix before the phase
+   is marked done.
 
 ## Why
 
@@ -125,13 +132,23 @@ Three observed bugs / friction points, all in the fork at
    Select-all / select-none toggles work. OK creates one project per
    checked row with `name = folder basename` and persists via the existing
    `config.update` message.
-7. All existing Vitest unit suites still pass, including the
+7. **Bulk-import master checkbox stays in sync with row state.** On
+   modal open with all rows pre-selected, the "Select all" checkbox
+   is shown ticked. Toggling any row updates the master:
+   - All rows checked → master `checked`.
+   - Some rows checked → master `indeterminate`.
+   - No rows checked → master unchecked.
+   Implementation work site: `public/js/app.js:1126` (render) and
+   `public/js/app.js:1175-1178` (one-way listener — add the reverse
+   listener for row → master sync and initialize master state on
+   render).
+8. All existing Vitest unit suites still pass, including the
    `hotkeys-paste`, `ws-send-guard`, and any others present.
-8. The existing Playwright smoke + Ctrl+V paste E2E suites still pass.
-9. The new server handlers have unit-test coverage at the message-routing
-   level (rename mutation, missing-id no-op, listSubdirs marks already-imported
-   entries).
-10. No regressions to the existing `prev-sessions-menu-btn` section-wide
+9. The existing Playwright smoke + Ctrl+V paste E2E suites still pass.
+10. The new server handlers have unit-test coverage at the message-routing
+    level (rename mutation, missing-id no-op, listSubdirs marks already-imported
+    entries).
+11. No regressions to the existing `prev-sessions-menu-btn` section-wide
     "Clear dormant sessions" flow.
 
 ## Non-goals / explicit constraints

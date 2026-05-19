@@ -3,6 +3,8 @@ created: 2026-05-19T12:02:00Z
 title: Add "Pause session" context-menu action to move an active session to Previous Sessions
 area: ui
 phase_hint: 2026-05-19-session-pause
+ingested_into: .planning/2026-05-19-session-pause/SPEC.md (sole deliverable)
+ingested_at: 2026-05-19
 files:
   - public/js/terminals.js:175-226
   - public/js/terminals.js:239-241
