@@ -1,14 +1,14 @@
 # SPEC — Wrapper-process restart architecture (and lozenge polish)
 
-**Status:** mostly shipped, pending tooltip + end-to-end verification
+**Status:** mostly shipped, pending tooltip + relocation + end-to-end verification
 **Owner:** Lance Keay
 **Date:** 2026-05-18
 
 ## What this delivers
 
-Five connected pieces of work that make in-UI clideck restart actually
+Six connected pieces of work that make in-UI clideck restart actually
 reliable on Windows, plus a visible connection indicator with a
-readable version chip.
+readable version chip in a non-occluding location.
 
 1. **Wrapper-process restart.** A neutral coordinator script
    (`lib/restart-wrapper.js`, ~140 lines) is spawned by the dying
@@ -37,6 +37,16 @@ readable version chip.
    plus the connection state + uptime as a secondary line. Custom
    tooltip, not native `title=` (which renders at the OS default
    size and defeats the point).
+6. **Relocate lozenge out of the lower-left corner (REMAINING WORK).**
+   The fixed-position `bottom-1.5 left-1.5 z-50` placement hovers
+   over the version display and part of the gear icon below it,
+   obscuring nearby UI even with `pointer-events-none`. Move the
+   lozenge into the sessions panel header — just above the
+   `#search-input` — where the 354 px sidebar provides plenty of
+   width and the eye already lands. Drops `fixed` / `bottom-1.5` /
+   `left-1.5` / `z-50` / `pointer-events-none` / `backdrop-blur-sm`;
+   keeps the pill styling and the existing element IDs so
+   `renderStatusBadge()` continues to find them unchanged.
 
 ## Why
 
@@ -66,6 +76,12 @@ couldn't tell at a glance whether his browser was connected to the
 current server, a stale tab, or a server mid-restart. The lozenge is
 that "am I connected?" indicator. The tooltip is the natural
 follow-on — the data is visible but unreadable.
+
+Relocation is the third follow-on: the fixed-corner position made
+the lozenge feel like it was *on top of* the app rather than part of
+it, occluding the version chip and gear icon underneath. Putting it
+in the sidebar header turns it into a first-class member of the UI
+instead of a floating overlay.
 
 ## Scope
 
@@ -98,11 +114,31 @@ follow-on — the data is visible but unreadable.
     smaller line.
   - Updated from `renderStatusBadge()` whenever the badge text is
     rebuilt — single source of truth.
-  - Resolves the inherited `pointer-events-none` constraint on the
-    badge (intentional, so it doesn't block clicks on the nav rail
-    below) by flipping just the badge's own hit area to
-    `pointer-events-auto`. The badge is small enough that the loss
-    of click-through is negligible.
+  - After relocation (below), the lozenge is in-flow inside
+    `#panel-chats`, so the inherited `pointer-events-none`
+    constraint is gone and the tooltip needs no special hit-area
+    handling. If implemented **before** relocation, flip just the
+    badge's own hit area to `pointer-events-auto`.
+
+- Lozenge relocation:
+  - Remove the `<div id="app-status-badge">` block at
+    `public/index.html:134-138`.
+  - Insert into `#panel-chats` above the search row at
+    `public/index.html:191`, either as a sibling of the search
+    wrapper or as a full-width header strip.
+  - Drop the Tailwind classes that were only needed for the
+    fixed-corner overlay: `fixed`, `bottom-1.5`, `left-1.5`,
+    `z-50`, `pointer-events-none`, `backdrop-blur-sm`.
+  - Keep `#app-status-badge`, `#app-status-dot`, `#app-status-text`
+    IDs so `renderStatusBadge()` in `public/js/app.js:53-76`
+    requires no JS changes.
+  - Delete the stale inline comment at `public/index.html:134`
+    ("…so it doesn't block clicks on the nav rail it sits over") —
+    no longer relevant once in-flow.
+  - Acceptable trade: ~24–28 px of sidebar real estate above the
+    search input. If that feels cramped in practice, fold the
+    lozenge into the title row at line 175 alongside
+    `#save-indicator` instead.
 
 **Out of scope**
 
@@ -126,8 +162,10 @@ follow-on — the data is visible but unreadable.
      `EADDRINUSE`.
    - `restart.log` contains four timestamped wrapper stages
      (parent-exit, port-free, spawn, listening) for forensics.
-2. The connection lozenge in the lower-left corner is visible at
-   all times when the page is loaded.
+2. The connection lozenge is visible at all times when the page is
+   loaded — after relocation, sitting inside the sessions panel
+   header above the `#search-input`. Before relocation, in the
+   lower-left corner.
 3. The lozenge is **green** when `state.ws.readyState === OPEN`,
    showing `connected · <uptime> · v<version>`.
 4. The lozenge is **red** when the WebSocket is closed,
@@ -138,14 +176,21 @@ follow-on — the data is visible but unreadable.
 6. **Hovering the lozenge reveals a custom tooltip** showing the
    version in a comfortably readable font size (≥ 12px) and the
    connection state + uptime as a secondary line.
-7. The lozenge does not interfere with clicks on the nav rail it
-   sits over — except in the badge's own hit area, where
-   `pointer-events: auto` is intentional for the hover affordance.
+7. After relocation, the lozenge sits in-flow inside `#panel-chats`
+   above the `#search-input`, does not overlap the version display
+   or gear icon, and does not require `pointer-events-none` to
+   coexist with anything. (Pre-relocation acceptance: the lozenge
+   does not interfere with clicks on the nav rail it sits over —
+   except in the badge's own hit area for the hover tooltip.)
 8. All 27 existing Vitest unit tests pass, including the
    restart-bootid handshake test that was added in `c729b60`.
 9. Manual smoke test on Windows: launch clideck, click Restart,
    verify lozenge flips red → green, verify a fresh uptime starts
    from 0s.
+10. The clideck title row, "+", bulk-import, and new-project icon
+    buttons in the sidebar header remain fully visible and clickable
+    after the lozenge is inserted above the search row — the new
+    row does not visually crowd them.
 
 ## Non-goals / explicit constraints
 
@@ -155,9 +200,13 @@ follow-on — the data is visible but unreadable.
   PTYs, no WSS, no node-pty). It runs in clideck's failure mode, so
   it can't depend on anything clideck might break.
 - The `pointer-events-none` constraint on `#app-status-badge` is
-  intentional and documented in `public/index.html:134-135`. Flip
-  to `pointer-events-auto` ONLY on the badge's own hit area; do not
-  remove the constraint wholesale.
+  intentional **only while the badge is the fixed-corner overlay**
+  (documented in `public/index.html:134-135`). It becomes moot once
+  the badge is relocated in-flow into the sidebar header
+  (deliverable 6) and should be removed at that point. If
+  implementing the tooltip first, flip to `pointer-events-auto`
+  on the badge's own hit area only; do not remove the constraint
+  wholesale until relocation lands.
 - Forensic logging in `restart.log` is load-bearing — do not drop
   the timestamped per-stage trace.
 
@@ -170,5 +219,8 @@ follow-on — the data is visible but unreadable.
 - Tooltip work site: `public/index.html:135` (add sibling/child
   tooltip element) and `public/js/app.js:53-76` (update tooltip
   text from `renderStatusBadge`).
+- Relocation insertion site: inside `#panel-chats` at
+  `public/index.html:191`, above the `<div class="relative">…
+  <input id="search-input" …>` block at lines 192-195.
 - Existing relevant commits on `fix/restart-button`: `61e4334`
   (safety net + lozenge), `b6ee84f` (wrapper architecture).

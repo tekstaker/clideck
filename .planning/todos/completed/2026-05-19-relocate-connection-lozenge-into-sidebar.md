@@ -3,6 +3,8 @@ created: 2026-05-19T15:20:00+01:00
 title: Relocate connection lozenge from lower-left corner into sidebar header
 area: ui
 phase_hint: 2026-05-18-restart-architecture
+ingested_into: .planning/2026-05-18-restart-architecture/SPEC.md (deliverable 6)
+ingested_at: 2026-05-19
 files:
   - public/index.html:134-138
   - public/index.html:172-204

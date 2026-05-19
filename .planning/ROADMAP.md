@@ -4,7 +4,7 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Active phase
 
-- [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Wrapper-process restart, defensive safety net, connection lozenge, and a readable hover tooltip on the lozenge. Code on `fix/restart-button` (v1.31.5); pending end-to-end verification + tooltip implementation.
+- [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Wrapper-process restart, defensive safety net, connection lozenge, a readable hover tooltip on the lozenge, and relocating the lozenge out of the lower-left corner (where it overlaps the version display and gear icon) into the sessions panel header above the search box. Code on `fix/restart-button` (v1.31.6); pending end-to-end verification + tooltip + relocation. (Restart-hang debug deferred — see memory.)
 
 ## Queued phases
 
