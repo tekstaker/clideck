@@ -65,8 +65,8 @@ function parseVersion(text) {
 }
 
 function getInstalledVersion(bin) {
-  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
-  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
   return '';
 }
 
@@ -105,7 +105,7 @@ function checkAvailability() {
     if (p.presetId === 'shell') { p.available = true; p.version = ''; p.versionOk = true; p.health = { ok: true }; continue; }
     const bin = binName(p.command);
     try {
-      execFileSync(whichCmd, [bin], { stdio: 'ignore' });
+      execFileSync(whichCmd, [bin], { stdio: 'ignore', windowsHide: true });
       p.available = true;
       p.version = getInstalledVersion(bin);
       p.versionOk = !p.minVersion || (p.version && compareVersions(p.version, p.minVersion) >= 0);
@@ -571,7 +571,7 @@ function onConnection(ws) {
 
       case 'remote.status': {
         let installed = false;
-        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore' }); installed = true; } catch {}
+        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore', windowsHide: true }); installed = true; } catch {}
         if (!installed) { ws.send(JSON.stringify({ type: 'remote.status', installed: false })); break; }
         require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
           if (err) { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); return; }
