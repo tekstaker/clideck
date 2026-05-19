@@ -1,6 +1,6 @@
 # SPEC — Session-management UX cleanup
 
-**Status:** in progress
+**Status:** done (closed out 2026-05-19 — commit `97b08c5`)
 **Owner:** Lance Keay
 **Date:** 2026-05-17
 
