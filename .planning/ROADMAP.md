@@ -4,7 +4,13 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Active phase
 
-- [2026-05-17-session-ux](2026-05-17-session-ux/SPEC.md) — Per-row Rename/Delete on Previous Sessions, graceful failed-resume → fresh session, bulk project import from a parent folder's subfolders.
+- **2026-05-18-restart-architecture** — Wrapper-process restart for in-UI clideck restart (neutral coordinator script in `lib/restart-wrapper.js`), defensive safety net (WSS error handler suppresses unhandled listen failures, bulletproof onShutdown with 3s hard-exit watchdog), connection lozenge in the lower-left with live status + uptime + version, **readable hover tooltip on the lozenge so the version text is legible**. Version 1.31.5. Code on `fix/restart-button` (commits `61e4334`, `b6ee84f`); pending end-to-end verification (port 4000 currently held by old PID 32256) and the tooltip todo. Phase needs a retroactive `SPEC.md` before merge.
+
+## Queued phases
+
+- [2026-05-17-session-ux](2026-05-17-session-ux/SPEC.md) — Per-row Rename/Delete on Previous Sessions, graceful failed-resume → fresh session, bulk project import from a parent folder's subfolders. **Follow-up before close-out:** sync the "Select all" checkbox state with row state in the bulk-import modal (see `.planning/todos/pending/2026-05-19-bulk-import-select-all-initial-state.md`).
+- **2026-05-19-session-polish** — Two follow-ups on sidebar / session-row UX: drag-to-reorder sessions within a project group (mirroring the existing project-reorder pattern in `public/js/drag.js`), and fix the visual collision between the "working" indicator (bouncing dot + green pill-status) and the "unread" dot — they should be mutually exclusive. Needs `SPEC.md` / `PLAN.md` when picked up.
+- **2026-05-19-terminal-ux** — Two terminal-interaction improvements that share the same per-terminal init hook at `public/js/terminals.js:520` and the same "don't break plain-click text selection" constraint: auto-copy on selection (pointerup-driven, reuses existing `copyTerminalSelection`, fires a short confirmation toast), and Ctrl/Cmd+click on URLs in terminal output to open them in a new tab (via `@xterm/addon-web-links`, hardened with `noopener,noreferrer` and http(s)-only scheme filtering). Needs `SPEC.md` / `PLAN.md` when picked up.
 
 ## Completed phases
 

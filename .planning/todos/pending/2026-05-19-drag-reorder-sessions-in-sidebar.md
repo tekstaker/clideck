@@ -2,6 +2,7 @@
 created: 2026-05-19T11:38:00Z
 title: Allow drag-to-reorder of sessions in the left sidebar
 area: ui
+phase_hint: 2026-05-19-session-polish
 files:
   - public/js/drag.js:38-50
   - public/js/drag.js:106-126

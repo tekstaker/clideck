@@ -2,6 +2,7 @@
 created: 2026-05-19T11:49:00Z
 title: Don't show "unread" dot while session is still working
 area: ui
+phase_hint: 2026-05-19-session-polish
 files:
   - public/js/app.js:202-209
   - public/js/terminals.js:583-591

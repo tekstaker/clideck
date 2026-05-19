@@ -2,6 +2,7 @@
 created: 2026-05-19T11:48:00Z
 title: Auto-copy terminal selection to clipboard with confirmation toast
 area: ui
+phase_hint: 2026-05-19-terminal-ux
 files:
   - public/js/terminals.js:141-150
   - public/js/terminals.js:520
