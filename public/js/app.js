@@ -1173,13 +1173,31 @@ function renderBulkImportModal(msg) {
   modal.querySelector('#bi-cancel').addEventListener('click', closeBulkImport);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeBulkImport(); });
   const selectAll = modal.querySelector('#bi-select-all');
+  const syncMaster = () => {
+    if (!selectAll) return;
+    const rows = modal.querySelectorAll('.bi-row');
+    if (rows.length === 0) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+      return;
+    }
+    const checked = modal.querySelectorAll('.bi-row:checked').length;
+    selectAll.checked = checked === rows.length;
+    selectAll.indeterminate = checked > 0 && checked < rows.length;
+  };
   if (selectAll) {
     selectAll.addEventListener('change', () => {
+      // Browser clears indeterminate on user click, but be explicit so the
+      // post-click state matches what syncMaster would compute.
+      selectAll.indeterminate = false;
       for (const cb of modal.querySelectorAll('.bi-row')) cb.checked = selectAll.checked;
       updateCount();
     });
   }
-  for (const cb of modal.querySelectorAll('.bi-row')) cb.addEventListener('change', updateCount);
+  for (const cb of modal.querySelectorAll('.bi-row')) {
+    cb.addEventListener('change', () => { updateCount(); syncMaster(); });
+  }
+  syncMaster();
 
   modal.querySelector('#bi-ok').addEventListener('click', async () => {
     const picked = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({
