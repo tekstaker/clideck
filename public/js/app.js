@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, setHasToken, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
@@ -194,7 +194,10 @@ function connect() {
           for (const id of [...state.terms.keys()]) {
             if (!liveIds.has(id)) removeTerminal(id);
           }
-          msg.list.forEach(s => addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview, s.presetId, s.cwd));
+          msg.list.forEach(s => {
+            addTerminal(s.id, s.name, s.themeId, s.commandId, s.projectId, s.muted, s.lastPreview, s.presetId, s.cwd);
+            setHasToken(s.id, !!s.hasToken);
+          });
           if (!state.active || !state.terms.has(state.active)) {
             if (msg.list.length) select(msg.list[0].id);
           }
@@ -202,6 +205,11 @@ function connect() {
         break;
       case 'created':
         if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview, msg.presetId, msg.cwd);
+        // Resumed sessions already carry a captured token — without
+        // propagating it here, the Pause menu item stays disabled
+        // until the agent emits a fresh token (which it usually
+        // won't during a resume — the token IS the resume key).
+        setHasToken(msg.id, !!msg.hasToken);
         select(msg.id);
         applyFilter();
         closeMobileSidebar();
@@ -221,7 +229,19 @@ function connect() {
         break;
       }
       case 'closed':
+        if (msg.reason === 'paused') {
+          const entry = state.terms.get(msg.id);
+          const name = entry ? document.querySelector(`.group[data-id="${msg.id}"] .name`)?.textContent || 'Session' : 'Session';
+          showToast(`Paused "${name}" — available under Previous Sessions.`, { type: 'info', duration: 2500 });
+        }
         removeTerminal(msg.id);
+        break;
+      case 'session.token':
+        // Server captured a session token for this id. Flip the entry's
+        // hasToken flag so the next open of the menu shows Pause as
+        // enabled. (No live re-render of an already-open menu — the
+        // user can close and reopen.)
+        setHasToken(msg.id, !!msg.hasToken);
         break;
       case 'server.restarting': {
         // Surface a sticky toast so every connected client knows what's

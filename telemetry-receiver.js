@@ -14,6 +14,7 @@ const codexToolPhasePending = new Set(); // sessionId set once Codex has announc
 const codexPendingTools = new Map(); // sessionId → Set(callId) for approved Codex tool calls still awaiting a result
 let broadcastFn = null;
 let sessionsFn = null;
+let captureTokenFn = null;
 
 function getPendingToolSet(id) {
   let set = codexPendingTools.get(id);
@@ -46,9 +47,10 @@ function hasPendingToolState(id) {
   return codexToolPhasePending.has(id) || hasPendingTools(id);
 }
 
-function init(broadcast, getSessions) {
+function init(broadcast, getSessions, captureToken) {
   broadcastFn = broadcast;
   sessionsFn = getSessions;
+  captureTokenFn = captureToken;
 }
 
 // Flatten OTLP attribute arrays into plain objects
@@ -209,7 +211,11 @@ function handleLogs(req, res) {
           // Prefer interactive session ID (Gemini sends non-interactive init events first)
           const dominated = sess.sessionToken && attrs['interactive'] === true;
           if (!sess.sessionToken || dominated) {
-            sess.sessionToken = agentSessionId;
+            // Funnel through captureToken so the `session.token` broadcast
+            // fires on the first-set edge — critical for the Pause menu
+            // item to flip from disabled to enabled in real time.
+            if (captureTokenFn) captureTokenFn(resolvedId, agentSessionId);
+            else sess.sessionToken = agentSessionId;
             console.log(`Telemetry: captured session ID ${agentSessionId} for ${agent} (${resolvedId.slice(0, 8)})`);
           }
         }

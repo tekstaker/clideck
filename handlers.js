@@ -240,7 +240,7 @@ function detectTelemetryConfig(c) {
 const appVersion = require('./package.json').version;
 
 function configForClient() {
-  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion, bootId: BOOT_ID };
+  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion, bootId: BOOT_ID, hostDir: process.env.CLIDECK_HOST_DIR || null };
 }
 
 function remoteCliEnv() {
@@ -447,6 +447,14 @@ function onConnection(ws) {
       // in-memory Map + resumable list and broadcasts so other clients sync.
       case 'session.reorder':
         sessions.reorderSessions(msg.ids, cfg);
+        break;
+
+      // User-triggered pause — same end state as a natural PTY exit but
+      // initiated from the active-session context menu. Refuses cleanly
+      // when no sessionToken has been captured (silent degrade to delete
+      // would lose user data and is explicitly forbidden by the SPEC).
+      case 'session.pause':
+        sessions.pause(msg, ws, cfg);
         break;
 
       // Client reports latest preview text — stored in memory, persisted by auto-save

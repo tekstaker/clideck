@@ -274,7 +274,26 @@ function openMenu(sessionId, anchor) {
     <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-slate-300 hover:bg-slate-700 transition-colors text-left" data-action="refresh">
       <span class="flex-shrink-0 text-slate-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h4.5M20 20v-5h-4.5M4 9a9 9 0 0 1 15.36-5.36M20 15a9 9 0 0 1-15.36 5.36"/></svg></span>
       Refresh session
-    </button>
+    </button>`;
+  // Pause: present only when the underlying command is resumable.
+  // Enabled only when a sessionToken has been captured by the agent —
+  // pause without a token would silently degrade to delete, which is
+  // unacceptable per the SPEC. The disabled-state tooltip names the
+  // reason so the user isn't left guessing.
+  const cmd = (state.cfg.commands || []).find(c => c.id === entry?.commandId);
+  const canPause = !!(cmd && cmd.canResume && cmd.resumeCommand);
+  if (canPause) {
+    const pauseEnabled = !!entry?.hasToken;
+    const pauseTitle = pauseEnabled
+      ? 'End the live session and move it to Previous Sessions. You can resume it later.'
+      : 'Pause unavailable until the agent emits a resumable session ID.';
+    html += `
+    <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm ${pauseEnabled ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 cursor-default'} transition-colors text-left" data-action="pause" title="${esc(pauseTitle)}" aria-label="${esc(pauseTitle)}" ${pauseEnabled ? '' : 'disabled'}>
+      <span class="flex-shrink-0 ${pauseEnabled ? 'text-slate-400' : 'text-slate-600'}"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></span>
+      Pause
+    </button>`;
+  }
+  html += `
     <button class="menu-action flex items-center gap-2.5 w-full px-3 py-2 text-sm text-red-400 hover:bg-slate-700 transition-colors text-left" data-action="delete">
       <span class="flex-shrink-0 text-red-400"><svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></span>
       Delete
@@ -303,6 +322,8 @@ function openMenu(sessionId, anchor) {
       document.getElementById('session-list').dispatchEvent(
         new CustomEvent('session-delete', { detail: { id: sessionId } })
       );
+    } else if (action === 'pause') {
+      send({ type: 'session.pause', id: sessionId });
     } else if (action === 'theme') {
       const iconEl = document.querySelector(`.group[data-id="${sessionId}"] .session-icon`);
       if (iconEl) openThemePicker(sessionId, iconEl);
@@ -583,7 +604,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     }
   }, 500);
   const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
-  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
+  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '', hasToken: false });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
@@ -683,6 +704,19 @@ export function reorderTerms(ids) {
   state.resumable = rebuiltResumable;
 
   regroupSessions();
+}
+
+// Update a session entry's hasToken state — drives the Pause menu
+// item's enabled / disabled appearance. Called by app.js when the
+// server announces a token capture (`session.token` broadcast) and
+// on initial `sessions` / `created` broadcasts that include the
+// hasToken field. The menu reads this lazily when opened, so the
+// next open after a capture reflects the new state — no live
+// re-render needed.
+export function setHasToken(id, hasToken) {
+  const entry = state.terms.get(id);
+  if (!entry) return;
+  entry.hasToken = !!hasToken;
 }
 
 export function markUnread(id) {
