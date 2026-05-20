@@ -1,6 +1,6 @@
 # SPEC — Session sidebar polish
 
-**Status:** planned
+**Status:** done (closed out 2026-05-20 — commits `6b5450a` + `108ccd4`)
 **Owner:** Lance Keay
 **Date:** 2026-05-19
 
