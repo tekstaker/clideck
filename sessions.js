@@ -143,6 +143,10 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
       if (match) {
         session.sessionToken = match[1];
         console.log(`Session ${id.slice(0, 8)}: captured token via output regex: ${match[1].slice(0, 12)}…`);
+        // Notify clients so the Pause menu item can flip from disabled
+        // to enabled in real time — without this they'd only see the
+        // change after a reconnect-driven `sessions` re-broadcast.
+        broadcast({ type: 'session.token', id, hasToken: true });
       }
     }
     activity.trackOut(id, data);
@@ -198,23 +202,7 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
     }
 
     // If resumable and token captured, move to resumable list (keep transcript for search)
-    if (!s.ephemeral && cmd.canResume && cmd.resumeCommand && s.sessionToken) {
-      resumable.push({
-        id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
-        themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
-        roleName: s.roleName || null,
-        lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
-        savedAt: new Date().toISOString(),
-      });
-      console.log(`Session ${id.slice(0, 8)}: moved to resumable on exit (token: ${s.sessionToken.slice(0, 12)}…)`);
-    } else {
-      transcript.clear(id);
-    }
-    sessions.delete(id);
-    broadcast({ type: 'closed', id });
-    if (!s.ephemeral && cmd.canResume && s.sessionToken) {
-      broadcast({ type: 'sessions.resumable', list: getResumable() });
-    }
+    moveToResumable(id, s, cmd);
   });
 
   return null;
@@ -409,6 +397,75 @@ function close(msg, cfg) {
   if (resumable.length !== before) broadcast({ type: 'sessions.resumable', list: getResumable(cfg) });
 }
 
+// Shared transition: a live session ends and (if eligible) moves into
+// the resumable list. Called from two places — the natural-exit path
+// inside spawnSession's `term.onExit` handler, and the user-triggered
+// pause() handler below. Keeping both call sites on this one helper
+// is load-bearing per the SPEC: the user's "Pause" gesture MUST
+// produce the same on-disk shape and broadcast pattern as a natural
+// PTY exit, so a paused session is indistinguishable from one that
+// quit on its own.
+//
+// `reason` is an optional metadata tag stamped onto the `closed`
+// broadcast (the pause path uses `reason: 'paused'` so the client
+// can surface a "Session paused" toast instead of the silent
+// natural-exit teardown).
+function moveToResumable(id, s, cmd, { reason, cfg } = {}) {
+  const closedFrame = reason ? { type: 'closed', id, reason } : { type: 'closed', id };
+  const eligible = !s.ephemeral && cmd?.canResume && cmd?.resumeCommand && s.sessionToken;
+  if (eligible) {
+    resumable.push({
+      id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
+      themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
+      roleName: s.roleName || null,
+      lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+      savedAt: new Date().toISOString(),
+    });
+    console.log(`Session ${id.slice(0, 8)}: moved to resumable (token: ${s.sessionToken.slice(0, 12)}…)${reason ? ` reason=${reason}` : ''}`);
+  } else {
+    transcript.clear(id);
+  }
+  sessions.delete(id);
+  broadcast(closedFrame);
+  if (!s.ephemeral && cmd?.canResume && s.sessionToken) {
+    broadcast({ type: 'sessions.resumable', list: getResumable(cfg) });
+  }
+  return eligible;
+}
+
+// User-triggered pause — counterpart of the natural-exit transition.
+// Ends the live PTY, persists the captured sessionToken + transcript
+// (via moveToResumable), and moves the row from active → Previous
+// Sessions. Refuses cleanly when the session has no captured token or
+// the command can't resume — silently degrading to delete would lose
+// user data, which the SPEC explicitly forbids.
+function pause(msg, ws, cfg) {
+  const s = sessions.get(msg?.id);
+  if (!s) return false;
+  const cmd = (cfg?.commands || []).find(c => c.id === s.commandId);
+  if (!cmd || !cmd.canResume || !cmd.resumeCommand || !s.sessionToken) {
+    const why = !cmd
+      ? 'Command not found.'
+      : !cmd.canResume || !cmd.resumeCommand
+        ? 'This session type does not support resume — close it instead.'
+        : 'Cannot pause yet — the agent has not emitted a resumable session ID.';
+    try {
+      ws?.send(JSON.stringify({
+        type: 'error',
+        message: why,
+        context: 'session.pause',
+        id: msg.id,
+      }));
+    } catch {}
+    return false;
+  }
+
+  try { s.pty.kill(); } catch (e) { console.error(`[session.pause] pty.kill threw for ${msg.id}:`, e.message); }
+  telemetry.clear?.(msg.id);
+  plugins.clearStatus?.(msg.id);
+  return moveToResumable(msg.id, s, cmd, { reason: 'paused', cfg });
+}
+
 // Restart a live session's PTY with updated env (e.g. after polarity flip).
 // Uses resume command if available, otherwise re-launches the original command.
 function restart(msg, ws, cfg) {
@@ -465,6 +522,10 @@ function list() {
     cwd: s.cwd || '',
     // Last preview text for sidebar display on reconnect
     lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+    // Whether the underlying agent has emitted a session token yet.
+    // Drives the "Pause" menu item's enable state — pause without a
+    // token would silently degrade to delete, which is unacceptable.
+    hasToken: !!s.sessionToken,
     menu: s._menuKey ? JSON.parse(s._menuKey) : undefined,
   }));
 }
@@ -668,7 +729,7 @@ function shutdown(cfg) {
 
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
-  create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close,
+  create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close, pause,
   list, getResumable, renameResumable, reorderSessions, sendBuffers,
   loadSessions, startAutoSave, shutdown,
   __setResumableForTest, __getResumableForTest,

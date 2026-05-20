@@ -449,6 +449,14 @@ function onConnection(ws) {
         sessions.reorderSessions(msg.ids, cfg);
         break;
 
+      // User-triggered pause — same end state as a natural PTY exit but
+      // initiated from the active-session context menu. Refuses cleanly
+      // when no sessionToken has been captured (silent degrade to delete
+      // would lose user data and is explicitly forbidden by the SPEC).
+      case 'session.pause':
+        sessions.pause(msg, ws, cfg);
+        break;
+
       // Client reports latest preview text — stored in memory, persisted by auto-save
       case 'session.setPreview':
         sessions.setPreview(msg.id, msg.text, msg.timestamp);
