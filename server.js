@@ -59,8 +59,8 @@ const plugins = require('./plugin-loader');
 ensurePtyHelper();
 sessions.loadSessions();
 transcript.init(sessions.broadcast, new Set(sessions.getResumable().map(s => s.id)), (...args) => plugins.notifyTranscript(...args));
-telemetry.init(sessions.broadcast, sessions.getSessions);
-require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions);
+telemetry.init(sessions.broadcast, sessions.getSessions, sessions.captureToken);
+require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions, sessions.captureToken);
 const config = require('./config');
 plugins.init(sessions.broadcast, sessions.getSessions, () => require('./handlers').getConfig(), (cfg) => config.save(cfg), sessions.input, sessions.createProgrammatic, sessions.close);
 
@@ -134,7 +134,7 @@ const server = http.createServer((req, res) => {
         }
         if (matchedId) {
           const sess = allSessions.get(matchedId);
-          if (sess && threadId && !sess.sessionToken) sess.sessionToken = threadId;
+          if (sess && threadId) sessions.captureToken(matchedId, threadId);
           const telemetry = require('./telemetry-receiver');
           if (route === 'start') telemetry.markCodexStart(matchedId, 'hook');
           else if (route === 'stop') telemetry.armCodexStop(matchedId);
@@ -164,6 +164,11 @@ const server = http.createServer((req, res) => {
         // console.log(`[claude] hook ${route} clideck=${payload.clideck_id?.slice(0,8) || 'none'} session=${sessionId?.slice(0,8) || 'none'} match=${clideckId?.slice(0,8) || 'none'}`);
         if (clideckId) {
           const sess = allSessions.get(clideckId);
+          // Claude's session_id IS the resumable session token. Capture
+          // it on every hook payload that carries one — telemetry may
+          // not be set up, in which case this is the only signal that
+          // makes the session pauseable / resumable.
+          if (sess && sessionId) sessions.captureToken(clideckId, sessionId);
           if (route === 'start') {
             // console.log(`[claude] status working=true source=hook session=${clideckId.slice(0,8)}`);
             sessions.broadcast({ type: 'session.status', id: clideckId, working: true, source: 'hook' });
@@ -207,7 +212,7 @@ const server = http.createServer((req, res) => {
           : [...allSessions].find(([, s]) => s.sessionToken === payload.session_id)?.[0];
         if (clideckId) {
           const s = allSessions.get(clideckId);
-          if (s && payload.session_id && !s.sessionToken) s.sessionToken = payload.session_id;
+          if (s && payload.session_id) sessions.captureToken(clideckId, payload.session_id);
           if (route === 'menu') {
             startGeminiMenuPoll(clideckId);
           } else {

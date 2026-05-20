@@ -141,12 +141,8 @@ function spawnSession(id, cmd, parts, cwd, name, themeId, commandId, savedToken,
       const joined = session.chunks.join('');
       const match = joined.match(sessionIdRe) || joined.replace(ANSI_RE, '').match(sessionIdRe);
       if (match) {
-        session.sessionToken = match[1];
+        captureToken(id, match[1]);
         console.log(`Session ${id.slice(0, 8)}: captured token via output regex: ${match[1].slice(0, 12)}…`);
-        // Notify clients so the Pause menu item can flip from disabled
-        // to enabled in real time — without this they'd only see the
-        // change after a reconnect-driven `sessions` re-broadcast.
-        broadcast({ type: 'session.token', id, hasToken: true });
       }
     }
     activity.trackOut(id, data);
@@ -539,6 +535,27 @@ function setPreview(id, text, timestamp) {
   return true;
 }
 
+// Centralised session-token capture. Five different code paths can
+// learn a session's resumable token (output regex, Codex hook, Claude
+// hook, Gemini hook, telemetry receiver, OpenCode plugin bridge); they
+// all funnel through here so the `session.token` broadcast fires
+// EXACTLY once — at the first-set edge — regardless of which path
+// observed it first.
+//
+// Returns true if the capture was the first set (broadcast was sent),
+// false otherwise. Callers that gate by `!s.sessionToken` can stop
+// doing that — this helper preserves the same semantic via wasUnset.
+function captureToken(id, sessionToken) {
+  const s = sessions.get(id);
+  if (!s || !sessionToken) return false;
+  const wasUnset = !s.sessionToken;
+  s.sessionToken = sessionToken;
+  if (wasUnset) {
+    broadcast({ type: 'session.token', id, hasToken: true });
+  }
+  return wasUnset;
+}
+
 function setProject(id, projectId) {
   const s = sessions.get(id);
   if (s) { s.projectId = projectId || null; return true; }
@@ -729,7 +746,7 @@ function shutdown(cfg) {
 
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
-  create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close, pause,
+  create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close, pause, captureToken,
   list, getResumable, renameResumable, reorderSessions, sendBuffers,
   loadSessions, startAutoSave, shutdown,
   __setResumableForTest, __getResumableForTest,

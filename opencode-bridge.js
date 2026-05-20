@@ -7,10 +7,12 @@ const watchers = new Map();
 
 let broadcastFn = null;
 let sessionsFn = null;
+let captureTokenFn = null;
 
-function init(broadcast, getSessions) {
+function init(broadcast, getSessions, captureToken) {
   broadcastFn = broadcast;
   sessionsFn = getSessions;
+  captureTokenFn = captureToken;
 }
 
 function watchSession(sessionId, cwd) {
@@ -59,7 +61,10 @@ function claim(sessionId, ocSid) {
   if (!w) return;
   w.opencodeSessionId = ocSid;
   const sess = sessionsFn?.()?.get(sessionId);
-  if (sess && !sess.sessionToken) sess.sessionToken = ocSid;
+  if (sess && !sess.sessionToken) {
+    if (captureTokenFn) captureTokenFn(sessionId, ocSid);
+    else sess.sessionToken = ocSid;
+  }
 }
 
 function unclaimedIds() {
@@ -135,7 +140,10 @@ function handleEvent(payload) {
   if (payload.event === 'session.updated') {
     const sess = sessionsFn?.()?.get(sessionId);
     if (sess) {
-      if (!sess.sessionToken) sess.sessionToken = ocSid;
+      if (!sess.sessionToken) {
+        if (captureTokenFn) captureTokenFn(sessionId, ocSid);
+        else sess.sessionToken = ocSid;
+      }
       if (payload.info?.title) sess.title = payload.info.title;
     }
   }
