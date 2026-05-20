@@ -204,7 +204,13 @@ function connect() {
         if (msg.replay && reconnectReplaySkip?.has(msg.id) && entry) break;
         if (entry && !entry.queue(msg.data)) entry.term.write(msg.data);
         updatePreview(msg.id);
-        markUnread(msg.id);
+        // Primary unread trigger is the working→idle transition inside
+        // setStatus (terminals.js) — it gates the dot so it can't collide
+        // with the bouncing "working" indicator. This fallback path only
+        // fires for passive output (a session that never enters working
+        // state, e.g. a `tail -f` in a Shell preset), so the dot still
+        // flags unattended activity for non-agent sessions.
+        if (entry && !entry.working) markUnread(msg.id);
         break;
       }
       case 'closed':

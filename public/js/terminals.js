@@ -668,13 +668,28 @@ function setStatus(id, working) {
   }
 
   // Save once shortly after idle unless the agent resumes first.
+  // Also fire the unread dot here — the unread state means "an idle
+  // session has output you haven't seen", which is precisely the
+  // working→idle edge. Anchoring it to this transition (rather than
+  // every output chunk) keeps the dot mutually exclusive with the
+  // bouncing "working" indicator on the row's left side.
   if (wasWorking && !working) {
     entry.scheduleIdleCapture?.();
+    if (id !== state.active) markUnread(id);
   }
 
   if (working) {
     entry.cancelIdleCapture?.();
     if (!entry.workStartedAt) entry.workStartedAt = Date.now();
+    // Idle→working: hide any stale unread dot. The dot's contract is
+    // "idle and unattended"; once the session is working, that meaning
+    // no longer applies. If output remains unread after this work
+    // cycle, the working→idle branch above will re-set the dot.
+    if (!wasWorking && entry.unread) {
+      entry.unread = false;
+      document.querySelector(`.group[data-id="${id}"] .unread-dot`)?.classList.add('hidden');
+      updateUnreadBadge();
+    }
   }
 
   const el = document.querySelector(`.group[data-id="${id}"] .session-status`);
