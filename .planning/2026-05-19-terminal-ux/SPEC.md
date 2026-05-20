@@ -1,6 +1,6 @@
 # SPEC — Terminal interaction polish
 
-**Status:** planned
+**Status:** done (closed out 2026-05-20 — commit `8fa1def`)
 **Owner:** Lance Keay
 **Date:** 2026-05-19
 
