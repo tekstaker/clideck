@@ -442,6 +442,13 @@ function onConnection(ws) {
         break;
       }
 
+      // Drag-to-reorder dropped a session into a new sidebar position.
+      // Client sends the full id sequence post-drop; server reorders the
+      // in-memory Map + resumable list and broadcasts so other clients sync.
+      case 'session.reorder':
+        sessions.reorderSessions(msg.ids, cfg);
+        break;
+
       // Client reports latest preview text — stored in memory, persisted by auto-save
       case 'session.setPreview':
         sessions.setPreview(msg.id, msg.text, msg.timestamp);

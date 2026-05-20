@@ -484,6 +484,57 @@ function setProject(id, projectId) {
   return false;
 }
 
+// Reorder the in-memory sessions Map and resumable array to match the
+// caller's id sequence. Anything in `ids` that doesn't exist in either
+// store is silently dropped; anything present in the stores but missing
+// from `ids` is appended at the end (defensive — keeps unknown entries
+// alive rather than vanishing them on a partial-sequence reorder).
+//
+// Persistence is automatic: saveSessions iterates the Map and resumable
+// array in iteration order, so a reorder that lands here is captured by
+// the 30s auto-save and by shutdown.
+function reorderSessions(ids, cfg) {
+  if (!Array.isArray(ids) || ids.length === 0) return false;
+
+  // Map reorder — build a new Map in the requested order, then append
+  // any remaining entries that the caller didn't mention.
+  const seen = new Set();
+  const rebuiltLive = new Map();
+  for (const id of ids) {
+    if (sessions.has(id) && !seen.has(id)) {
+      rebuiltLive.set(id, sessions.get(id));
+      seen.add(id);
+    }
+  }
+  for (const [id, entry] of sessions) {
+    if (!seen.has(id)) rebuiltLive.set(id, entry);
+  }
+  sessions.clear();
+  for (const [id, entry] of rebuiltLive) sessions.set(id, entry);
+
+  // Resumable reorder — same shape: respect the caller's order for ids
+  // it knows, then keep any unmentioned dormant rows at the end.
+  const resumeIdx = new Map(resumable.map((r, i) => [r.id, i]));
+  const seenR = new Set();
+  const rebuiltDormant = [];
+  for (const id of ids) {
+    if (resumeIdx.has(id) && !seenR.has(id)) {
+      rebuiltDormant.push(resumable[resumeIdx.get(id)]);
+      seenR.add(id);
+    }
+  }
+  for (const r of resumable) {
+    if (!seenR.has(r.id)) rebuiltDormant.push(r);
+  }
+  resumable = rebuiltDormant;
+
+  try { saveSessions(cfg || { commands: [] }); } catch (e) {
+    console.error('[session.reorder] persist failed:', e.message);
+  }
+  broadcast({ type: 'sessions.reorder', ids });
+  return true;
+}
+
 // Rename a dormant ("resumable") session by id. Mutates in-memory entry,
 // persists via saveSessions(), and broadcasts the updated list. Used by the
 // per-row Rename action in "Previous Sessions" — the only path the user has
@@ -618,7 +669,7 @@ function shutdown(cfg) {
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
   create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close,
-  list, getResumable, renameResumable, sendBuffers,
+  list, getResumable, renameResumable, reorderSessions, sendBuffers,
   loadSessions, startAutoSave, shutdown,
   __setResumableForTest, __getResumableForTest,
 };

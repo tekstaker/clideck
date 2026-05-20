@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
@@ -177,6 +177,13 @@ function connect() {
       case 'sessions.resumable':
         state.resumable = msg.list;
         renderResumable();
+        break;
+      case 'sessions.reorder':
+        // Server confirmed (or another client initiated) a drag-to-reorder.
+        // Rebuild the local Maps to match — the originating client already
+        // did this optimistically, so this is a no-op there; on other
+        // clients it's the live sync.
+        reorderTerms(msg.ids);
         break;
       case 'error':
         showToast(msg.message || 'CliDeck action failed.', { type: 'error', title: 'CliDeck Error', duration: 5000 });

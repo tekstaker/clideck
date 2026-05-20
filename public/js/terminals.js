@@ -580,6 +580,43 @@ export function select(id) {
 
 // --- Preview & status ---
 
+// Rebuild state.terms (and state.resumable) to match a new id sequence.
+// Used by the drag-to-reorder flow: drag emits `session.reorder`, server
+// broadcasts back, this handler applies the order. Entries not mentioned
+// in `ids` are appended at the end so an out-of-date client never loses
+// rows the server didn't bother to enumerate.
+export function reorderTerms(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const seenLive = new Set();
+  const rebuilt = new Map();
+  for (const id of ids) {
+    if (state.terms.has(id) && !seenLive.has(id)) {
+      rebuilt.set(id, state.terms.get(id));
+      seenLive.add(id);
+    }
+  }
+  for (const [id, entry] of state.terms) {
+    if (!seenLive.has(id)) rebuilt.set(id, entry);
+  }
+  state.terms = rebuilt;
+
+  const idx = new Map(state.resumable.map((r, i) => [r.id, i]));
+  const seenDormant = new Set();
+  const rebuiltResumable = [];
+  for (const id of ids) {
+    if (idx.has(id) && !seenDormant.has(id)) {
+      rebuiltResumable.push(state.resumable[idx.get(id)]);
+      seenDormant.add(id);
+    }
+  }
+  for (const r of state.resumable) {
+    if (!seenDormant.has(r.id)) rebuiltResumable.push(r);
+  }
+  state.resumable = rebuiltResumable;
+
+  regroupSessions();
+}
+
 export function markUnread(id) {
   const entry = state.terms.get(id);
   if (!entry || id === state.active || entry.unread) return;
