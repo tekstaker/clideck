@@ -202,11 +202,62 @@ async function copyTerminalSelection(sessionId) {
 }
 
 async function pasteIntoTerminal(sessionId) {
+  // Try the binary-aware path first. If the clipboard holds an image
+  // or any non-text blob, upload it to the session inbox; otherwise
+  // fall through to the original text-paste behaviour (load-bearing:
+  // the Ctrl+V phase's E2E and dictation tools depend on this).
+  try {
+    if (navigator.clipboard.read) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const binaryType = item.types.find(t => !t.startsWith('text/'));
+        if (binaryType) {
+          const blob = await item.getType(binaryType);
+          await uploadBlobToSession(sessionId, blob, binaryType);
+          return; // binary intent wins; do NOT also send text to PTY
+        }
+      }
+    }
+  } catch (e) {
+    // navigator.clipboard.read can throw for various reasons (no
+    // permission, no clipboard, headless environments). Fall through
+    // to the text path — that's the existing behaviour and keeps the
+    // common case working even when read() is unavailable.
+  }
   try {
     const text = await navigator.clipboard.readText();
     if (text) send({ type: 'input', id: sessionId, data: text });
   } catch {
     showToast('Clipboard read failed.', { type: 'error' });
+  }
+}
+
+async function uploadBlobToSession(sessionId, blob, mime, filename) {
+  const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
+  const label = filename || mime;
+  showToast(`Pasting ${label} (${sizeMb} MB)…`, { id: 'paste-blob', type: 'info', duration: 8000 });
+  try {
+    const headers = { 'Content-Type': mime || 'application/octet-stream' };
+    // X-Filename gives the server a hint; the sanitiser will strip
+    // anything path-shaped, so dropping the source filename in raw
+    // is safe (only the basename's safe chars survive).
+    if (filename) headers['X-Filename'] = filename;
+    const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/paste-blob`, {
+      method: 'POST',
+      headers,
+      body: blob,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      const reason = json.error || `HTTP ${res.status}`;
+      showToast(`Paste failed: ${reason}`, { id: 'paste-blob', type: 'error', duration: 4000 });
+      return false;
+    }
+    showToast(`Pasted → ${json.path}`, { id: 'paste-blob', type: 'success', duration: 2500 });
+    return true;
+  } catch (e) {
+    showToast(`Paste failed: ${e?.message || 'network error'}`, { id: 'paste-blob', type: 'error', duration: 4000 });
+    return false;
   }
 }
 
@@ -539,6 +590,24 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   term.open(el);
   attachToTerminal(term, presetId);
   const linkProvider = addLinkProvider(term);
+
+  // Drop overlay — covers the whole term-wrap with a modal-ish
+  // dashed-border target during file drag. Hidden by default; the
+  // `.drag-target` class on el reveals it. Lives inside el so it
+  // moves with the active terminal.
+  const dropOverlay = document.createElement('div');
+  dropOverlay.className = 'drop-overlay';
+  dropOverlay.innerHTML = `
+    <div class="drop-overlay-card">
+      <svg class="w-10 h-10 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <div class="drop-overlay-title">Drop to attach to session</div>
+      <div class="drop-overlay-sub">File lands in <code>.clideck/paste/</code> and the path is typed into your prompt.</div>
+    </div>`;
+  el.appendChild(dropOverlay);
   const onContextMenu = (e) => {
     if (e.shiftKey) return;
     e.preventDefault();
@@ -560,6 +629,41 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     }
   };
   el.addEventListener('pointerup', onPointerUp);
+
+  // Drag-and-drop file upload. Files copied from File Explorer don't
+  // put their bytes on the clipboard (only their path), so paste from
+  // clipboard can't see them — D&D is the only path that gives us a
+  // real File object. Drop anywhere on the terminal pane uploads each
+  // dropped file via the same /sessions/:id/paste-blob endpoint the
+  // clipboard-paste path uses.
+  //
+  // preventDefault on dragover is what tells the browser "this is a
+  // valid drop target" — without it the browser navigates the tab to
+  // the dropped file's content (the friction Lance hit during UAT).
+  const onDragOver = (e) => {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    el.classList.add('drag-target');
+  };
+  const onDragLeave = (e) => {
+    // Only clear the highlight when the cursor actually exits el.
+    // Dragging over child xterm elements fires dragleave on el even
+    // though we're still inside; check relatedTarget.
+    if (!el.contains(e.relatedTarget)) el.classList.remove('drag-target');
+  };
+  const onDrop = async (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    el.classList.remove('drag-target');
+    const files = [...e.dataTransfer.files];
+    for (const file of files) {
+      await uploadBlobToSession(id, file, file.type || 'application/octet-stream', file.name);
+    }
+  };
+  el.addEventListener('dragover', onDragOver);
+  el.addEventListener('dragleave', onDragLeave);
+  el.addEventListener('drop', onDrop);
   let fitted = false, pending = [];
   // [FIT-GUARD] only call fit() when proposed dimensions actually change — prevents
   // unnecessary buffer reflows that cause scrollbar jumpiness on sub-pixel layout shifts
@@ -604,7 +708,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     }
   }, 500);
   const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
-  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '', hasToken: false });
+  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, onDragOver, onDragLeave, onDrop, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '', hasToken: false });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
@@ -620,6 +724,9 @@ export function removeTerminal(id) {
   entry.ro?.disconnect();
   entry.el.removeEventListener?.('contextmenu', entry.onContextMenu);
   if (entry.onPointerUp) entry.el.removeEventListener?.('pointerup', entry.onPointerUp);
+  if (entry.onDragOver) entry.el.removeEventListener?.('dragover', entry.onDragOver);
+  if (entry.onDragLeave) entry.el.removeEventListener?.('dragleave', entry.onDragLeave);
+  if (entry.onDrop) entry.el.removeEventListener?.('drop', entry.onDrop);
   entry.linkProvider?.dispose?.();
   entry.term.dispose();
   entry.el.remove();
