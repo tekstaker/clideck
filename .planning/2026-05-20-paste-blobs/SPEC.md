@@ -117,10 +117,52 @@ the user (predictable path in their project tree) and the agent
   automatically. If the project is a git repo, the user can choose
   to gitignore it themselves. (Open question — see below.)
 
+### Drag-and-drop file upload (added after initial UAT)
+
+Initial UAT surfaced two paste-related friction points:
+
+- Files copied from File Explorer (Windows) don't put their bytes
+  on the clipboard — only the path. `navigator.clipboard.read()`
+  can't surface the bytes, so PDF / image-FILE pastes silently
+  fall through to the text path and type the path into the PTY.
+- Dragging a file from the desktop into the browser window made
+  the browser navigate the tab to the file's content (`file://...`),
+  losing the session.
+
+Drag-and-drop solves both: the browser hands us a real `File`
+object with bytes + name + MIME, and we can preventDefault to stop
+the navigate. Folded into this phase rather than spun out because
+it shares the entire server-side path with paste.
+
+Client wiring (`public/js/terminals.js`):
+
+  - `addTerminal()` attaches `dragover` / `dragleave` / `drop`
+    listeners to each session's `el` (the `.term-wrap` container).
+  - `dragover` preventDefaults only when the drag contains files
+    (`e.dataTransfer.types.includes('Files')`), then applies a
+    `.drag-target` class for the dashed-blue outline affordance.
+  - `dragleave` clears the class when the cursor exits `el` (with
+    a `relatedTarget` / `el.contains` check so the highlight
+    doesn't flicker when crossing child xterm elements).
+  - `drop` iterates `e.dataTransfer.files` and calls
+    `uploadBlobToSession(id, file, file.type, file.name)` for
+    each. The same endpoint, same toast, same confirmation line as
+    clipboard paste.
+  - All three listeners are tracked on the term entry and detached
+    in `removeTerminal()` — no leaks across session close.
+
+`uploadBlobToSession` extended with an optional `filename`
+parameter that gets sent as `X-Filename` — the server-side
+sanitiser strips anything path-shaped, so dropping the source
+filename in raw is safe (only basename's safe chars survive).
+
+CSS (`src/input.css`):
+
+  - `.term-wrap.drag-target` — dashed blue outline + faint tint
+    while a file is hovering the terminal.
+
 **Out of scope**
 
-- Drag-and-drop file uploads (could share the same server endpoint
-  but the UX entry point is different — separate phase).
 - Automatic OCR / format conversion of pasted blobs — agent
   decides what to do with the file.
 - Cross-session blob sharing — keep blobs scoped to the session
@@ -185,6 +227,15 @@ the user (predictable path in their project tree) and the agent
 
 11. New E2E coverage (where feasible — see testing gaps below) for
     the client→server round-trip with a known image.
+
+12. **Drag-and-drop:** dragging a file from the OS into a terminal's
+    `.term-wrap` shows the dashed-blue drop-target outline during
+    the drag, suppresses the browser's default "navigate to file"
+    behavior, and on release uploads the file via the same endpoint
+    + terminal confirmation as paste.
+
+13. Dragging multiple files onto a terminal uploads each in sequence
+    (single drop → N uploads, N confirmation lines).
 
 ## Non-goals / explicit constraints
 

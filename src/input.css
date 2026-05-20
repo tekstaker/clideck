@@ -304,6 +304,15 @@ html { transition: color 0.3s ease, background-color 0.3s ease; }
   @apply bg-blue-500 rounded-full mx-2 my-0.5;
 }
 
+/* Drag-and-drop file drop affordance on terminal containers.
+   Highlights the active terminal while a file is being dragged
+   into it from the OS. */
+.term-wrap.drag-target {
+  outline: 2px dashed rgb(59 130 246 / 0.7);
+  outline-offset: -6px;
+  background-color: rgb(59 130 246 / 0.05);
+}
+
 /* Project chevron rotation — down by default, right when collapsed */
 .project-chevron.collapsed svg {
   transform: rotate(-90deg);
