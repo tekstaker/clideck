@@ -21,16 +21,23 @@ const listing = document.getElementById('fp-listing');
 const selectBtn = document.getElementById('fp-select');
 const hiddenBtn = document.getElementById('fp-toggle-hidden');
 const newFolderBtn = document.getElementById('fp-new-folder');
+const hostBtn = document.getElementById('fp-host');
 let currentPath = '';
 let pendingPath = '';
 let onSelect = null;
 let showHidden = false;
+
+function updateHostBtn() {
+  if (!hostBtn) return;
+  hostBtn.classList.toggle('hidden', !state.cfg?.hostDir);
+}
 
 export function openFolderPicker(startPath, callback) {
   currentPath = '';
   onSelect = callback;
   overlay.classList.remove('hidden');
   overlay.classList.add('flex');
+  updateHostBtn();
   navigate(startPath || state.cfg.defaultPath || '/');
 }
 
@@ -133,6 +140,13 @@ function openNewFolderInput() {
 }
 
 newFolderBtn.addEventListener('click', openNewFolderInput);
+
+if (hostBtn) {
+  hostBtn.addEventListener('click', () => {
+    const hostDir = state.cfg?.hostDir;
+    if (hostDir) navigate(hostDir);
+  });
+}
 
 export function handleMkdirResponse(msg) {
   if (!newFolderActive) return;
