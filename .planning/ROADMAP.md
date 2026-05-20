@@ -8,7 +8,7 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Parked
 
-- [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Paused 2026-05-19. Wrapper-process restart shipped on `fix/restart-button` (v1.31.5 → v1.31.6), but the in-UI Restart still hangs the modal and kills active PTY sessions; debugging it live is too disruptive to ongoing work. Remaining deliverables (lozenge tooltip, lozenge relocation, restart-hang fix) deferred until the hang chase is safe to pick up — workaround in the meantime is `taskkill /F /PID <clideck-pid>` from an external terminal, then relaunch `clideck`. Full forensic notes in `memory/project_restart-button-broken.md`.
+- [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Paused 2026-05-19. Wrapper-process restart shipped on `fix/restart-button` (v1.31.5 → v1.31.6); lozenge relocation shipped 2026-05-20 on `feat/lozenge-relocation` at v1.31.8 (lozenge moved from lower-left corner to the sidebar under the clideck title, right above the search bar). Remaining deliverables (lozenge tooltip + restart-hang fix) deferred until the hang chase is safe to pick up. Workaround for the restart hang: `taskkill /F /PID <clideck-pid>` from an external terminal, then relaunch `clideck`. Full forensic notes in `memory/project_restart-button-broken.md`.
 
 ## Queued phases
 
