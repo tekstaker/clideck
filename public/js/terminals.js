@@ -202,11 +202,54 @@ async function copyTerminalSelection(sessionId) {
 }
 
 async function pasteIntoTerminal(sessionId) {
+  // Try the binary-aware path first. If the clipboard holds an image
+  // or any non-text blob, upload it to the session inbox; otherwise
+  // fall through to the original text-paste behaviour (load-bearing:
+  // the Ctrl+V phase's E2E and dictation tools depend on this).
+  try {
+    if (navigator.clipboard.read) {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const binaryType = item.types.find(t => !t.startsWith('text/'));
+        if (binaryType) {
+          const blob = await item.getType(binaryType);
+          await uploadBlobToSession(sessionId, blob, binaryType);
+          return; // binary intent wins; do NOT also send text to PTY
+        }
+      }
+    }
+  } catch (e) {
+    // navigator.clipboard.read can throw for various reasons (no
+    // permission, no clipboard, headless environments). Fall through
+    // to the text path — that's the existing behaviour and keeps the
+    // common case working even when read() is unavailable.
+  }
   try {
     const text = await navigator.clipboard.readText();
     if (text) send({ type: 'input', id: sessionId, data: text });
   } catch {
     showToast('Clipboard read failed.', { type: 'error' });
+  }
+}
+
+async function uploadBlobToSession(sessionId, blob, mime) {
+  const sizeMb = (blob.size / (1024 * 1024)).toFixed(1);
+  showToast(`Pasting ${mime} (${sizeMb} MB)…`, { id: 'paste-blob', type: 'info', duration: 8000 });
+  try {
+    const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/paste-blob`, {
+      method: 'POST',
+      headers: { 'Content-Type': mime },
+      body: blob,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json.ok) {
+      const reason = json.error || `HTTP ${res.status}`;
+      showToast(`Paste failed: ${reason}`, { id: 'paste-blob', type: 'error', duration: 4000 });
+      return;
+    }
+    showToast(`Pasted → ${json.path}`, { id: 'paste-blob', type: 'success', duration: 2500 });
+  } catch (e) {
+    showToast(`Paste failed: ${e?.message || 'network error'}`, { id: 'paste-blob', type: 'error', duration: 4000 });
   }
 }
 
