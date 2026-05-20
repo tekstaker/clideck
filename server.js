@@ -1,5 +1,5 @@
 const http = require('http');
-const { readFileSync, existsSync } = require('fs');
+const { readFileSync, existsSync, mkdirSync, writeFileSync } = require('fs');
 const { join, extname, resolve } = require('path');
 const { WebSocketServer } = require('ws');
 const { ensurePtyHelper } = require('./utils');
@@ -239,6 +239,81 @@ const server = http.createServer((req, res) => {
   // Session-to-session ask bridge used by the `clideck ask` CLI command.
   if (req.method === 'POST' && req.url === '/api/session/ask') {
     require('./session-ask').handleHttp(req, res, sessions);
+    return;
+  }
+
+  // Paste-blob upload — Ctrl+V on a focused terminal posts a binary
+  // clipboard item here. The bytes land in <cwd>/.clideck/paste/ and
+  // a confirmation line is echoed into the session's terminal stream
+  // so both the user and the running agent see the path that was
+  // written.
+  const blobMatch = req.method === 'POST' && req.url.match(/^\/sessions\/([^/]+)\/paste-blob$/);
+  if (blobMatch) {
+    const sessionId = decodeURIComponent(blobMatch[1]);
+    const sess = sessions.getSessions().get(sessionId);
+    if (!sess) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'session not found' }));
+    }
+    const pasteBlobs = require('./paste-blobs');
+    const mime = (req.headers['content-type'] || 'application/octet-stream').split(';')[0].trim();
+    const hint = req.headers['x-filename'] ? String(req.headers['x-filename']) : null;
+    const declaredLen = Number(req.headers['content-length'] || 0);
+    if (declaredLen > pasteBlobs.MAX_PASTE_BLOB_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'blob exceeds size limit', limit: pasteBlobs.MAX_PASTE_BLOB_BYTES }));
+    }
+    const target = pasteBlobs.buildSafeBlobPath(sess.cwd, hint, mime);
+    if (!target) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: false, error: 'invalid filename or session cwd' }));
+    }
+    const chunks = [];
+    let received = 0;
+    let aborted = false;
+    req.on('data', (chunk) => {
+      if (aborted) return;
+      received += chunk.length;
+      if (received > pasteBlobs.MAX_PASTE_BLOB_BYTES) {
+        aborted = true;
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'blob exceeds size limit', limit: pasteBlobs.MAX_PASTE_BLOB_BYTES }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      try {
+        mkdirSync(join(sess.cwd, '.clideck', 'paste'), { recursive: true });
+        writeFileSync(target, Buffer.concat(chunks));
+        const filename = target.split(/[\\/]/).pop();
+        const relPath = `.clideck/paste/${filename}`;
+        // Inject the path into the PTY's stdin so the agent actually
+        // sees it. Broadcasting an `output` frame only writes to
+        // xterm's display buffer — the agent process (Claude Code,
+        // Codex, etc.) reads from its own stdin, not from xterm. By
+        // writing to s.pty.write we put the path at the user's
+        // cursor as if they'd typed it; user can prepend "describe
+        // this " or hit enter as a bare ls/cat arg. Trailing space
+        // so the next character types after it cleanly.
+        try { sess.pty.write(relPath + ' '); } catch (e) {
+          console.error('[paste-blob] pty.write threw:', e.message);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, path: relPath, filename, sizeBytes: received, mime }));
+      } catch (e) {
+        console.error('[paste-blob] write failed:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'failed to write blob' }));
+      }
+    });
+    req.on('error', (e) => {
+      if (aborted) return;
+      console.error('[paste-blob] request error:', e.message);
+      try { res.writeHead(500).end(); } catch {}
+    });
     return;
   }
 

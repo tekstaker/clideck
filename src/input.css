@@ -304,6 +304,49 @@ html { transition: color 0.3s ease, background-color 0.3s ease; }
   @apply bg-blue-500 rounded-full mx-2 my-0.5;
 }
 
+/* Drag-and-drop file drop affordance on terminal containers.
+   The overlay is invisible by default and lives inside the
+   term-wrap; the `.drag-target` class on the wrap reveals it. */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background-color: rgb(15 23 42 / 0.78);
+  backdrop-filter: blur(2px);
+  z-index: 50;
+  pointer-events: none;
+}
+.term-wrap.drag-target .drop-overlay {
+  display: flex;
+}
+.drop-overlay-card {
+  border: 3px dashed rgb(59 130 246 / 0.8);
+  border-radius: 14px;
+  padding: 28px 44px;
+  color: rgb(226 232 240);
+  text-align: center;
+  background-color: rgb(30 41 59 / 0.6);
+  max-width: 420px;
+}
+.drop-overlay-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.drop-overlay-sub {
+  font-size: 12px;
+  color: rgb(148 163 184);
+  line-height: 1.5;
+}
+.drop-overlay-sub code {
+  background-color: rgb(15 23 42 / 0.6);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
 /* Project chevron rotation — down by default, right when collapsed */
 .project-chevron.collapsed svg {
   transform: rotate(-90deg);
