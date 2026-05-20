@@ -4,6 +4,7 @@ import { resolveTheme, resolveAccent, applyTheme } from './profiles.js';
 import { attachToTerminal, registerHotkey } from './hotkeys.js';
 import { closeDropdown } from './prompts.js';
 import { showToast } from './toast.js';
+import { URL_RE, cleanUrlMatch } from './terminal-urls.js';
 function isLightBg(themeId) {
   const bg = resolveTheme(themeId)?.background;
   if (!bg || bg[0] !== '#') return false;
@@ -39,6 +40,55 @@ const MIN_CONTRAST_RATIO = 4.5;
 
 const DARK_BALLS = ['#00e5ff', '#5df0d6', '#9b8cff'];
 const LIGHT_BALLS = ['#0891b2', '#059669', '#7c3aed'];
+
+// --- Terminal URL clickability ---
+//
+// The SPEC's load-bearing constraint is "plain click must continue to
+// start a text selection." That means we override xterm's default
+// link-activator behaviour (open on plain click) — instead, we only
+// open a URL when Ctrl or Cmd is held at click time. Plain click on a
+// link surface falls through to xterm's selection path; the URL is
+// just text again until you Ctrl/Cmd it.
+//
+// All `window.open` calls also pass `noopener,noreferrer`. Terminal
+// content is untrusted by definition (any agent or shell could print
+// hostile text); the new tab must not inherit our origin context and
+// must not leak a Referer.
+
+function openTerminalLink(url) {
+  const win = window.open(url, '_blank', 'noopener,noreferrer');
+  if (win) win.opener = null;
+}
+
+function addLinkProvider(term) {
+  return term.registerLinkProvider({
+    provideLinks(y, callback) {
+      const line = term.buffer.active.getLine(y - 1);
+      if (!line) return callback(undefined);
+      const text = line.translateToString(true);
+      const links = [];
+      for (const match of text.matchAll(URL_RE)) {
+        const cleaned = cleanUrlMatch(match[0], match.index || 0);
+        if (!cleaned) continue;
+        links.push({
+          text: cleaned.text,
+          range: {
+            start: { x: cleaned.index + 1, y },
+            end: { x: cleaned.index + cleaned.text.length, y },
+          },
+          activate: (event, linkText) => {
+            // Plain click → fall through to xterm's selection path.
+            // Defence-in-depth scheme check on top of cleanUrlMatch.
+            if (!(event.ctrlKey || event.metaKey)) return;
+            if (!/^https?:\/\//i.test(linkText)) return;
+            openTerminalLink(linkText);
+          },
+        });
+      }
+      callback(links.length ? links : undefined);
+    },
+  });
+}
 
 function startBounce(container) {
   const isDark = !document.documentElement.classList.contains('light');
@@ -141,11 +191,13 @@ function pointRect(x, y) {
 async function copyTerminalSelection(sessionId) {
   const entry = state.terms.get(sessionId);
   const text = entry?.term?.getSelection() || '';
-  if (!text) return;
+  if (!text) return false;
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     showToast('Clipboard write failed.', { type: 'error' });
+    return false;
   }
 }
 
@@ -465,6 +517,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
 
   term.open(el);
   attachToTerminal(term, presetId);
+  const linkProvider = addLinkProvider(term);
   const onContextMenu = (e) => {
     if (e.shiftKey) return;
     e.preventDefault();
@@ -473,6 +526,19 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     openMenu(id, { x: e.clientX, y: e.clientY });
   };
   el.addEventListener('contextmenu', onContextMenu);
+
+  // Auto-copy on drag-selection release. Plain click never reaches
+  // `term.hasSelection()` truthy here, so the clipboard stays
+  // untouched — selection requires a non-trivial drag.
+  // Fixed-id toast dedupes rapid back-to-back copies into a single
+  // resetting confirmation; see toast.js's `if (id) … remove()` path.
+  const onPointerUp = async () => {
+    if (!term.hasSelection()) return;
+    if (await copyTerminalSelection(id)) {
+      showToast('Copied', { id: 'terminal-copy', type: 'success', duration: 1200 });
+    }
+  };
+  el.addEventListener('pointerup', onPointerUp);
   let fitted = false, pending = [];
   // [FIT-GUARD] only call fit() when proposed dimensions actually change — prevents
   // unnecessary buffer reflows that cause scrollbar jumpiness on sub-pixel layout shifts
@@ -517,7 +583,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     }
   }, 500);
   const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
-  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
+  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '' });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
@@ -532,6 +598,8 @@ export function removeTerminal(id) {
   entry.cancelFitRaf?.();
   entry.ro?.disconnect();
   entry.el.removeEventListener?.('contextmenu', entry.onContextMenu);
+  if (entry.onPointerUp) entry.el.removeEventListener?.('pointerup', entry.onPointerUp);
+  entry.linkProvider?.dispose?.();
   entry.term.dispose();
   entry.el.remove();
   state.terms.delete(id);
