@@ -7,7 +7,7 @@ const sessions = require('./sessions');
 const themes = require('./themes');
 const presets = JSON.parse(readFileSync(join(__dirname, 'agent-presets.json'), 'utf8'));
 const { listDirs, binName, defaultShell } = require('./utils');
-const { PORT } = require('./runtime');
+const { PORT, BOOT_ID } = require('./runtime');
 for (const p of presets) if (p.presetId === 'shell') p.command = defaultShell;
 function isPresetEnabled(preset) {
   if (!preset?.enabledIfEnv) return true;
@@ -65,8 +65,8 @@ function parseVersion(text) {
 }
 
 function getInstalledVersion(bin) {
-  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
-  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
+  try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
   return '';
 }
 
@@ -77,14 +77,14 @@ function checkRemoteUpdate(ws) {
     return;
   }
   const shellOpt = process.platform === 'win32';
-  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
+  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err, stdout) => {
     let installed;
     try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; }
     catch {
       ws.send(JSON.stringify({ type: 'remote.update', available: false, checked: false }));
       return;
     }
-    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, timeout: 10000 }, (err2, stdout2) => {
+    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err2, stdout2) => {
       if (err2) {
         ws.send(JSON.stringify({ type: 'remote.update', installed, available: false, checked: false }));
         return;
@@ -105,7 +105,7 @@ function checkAvailability() {
     if (p.presetId === 'shell') { p.available = true; p.version = ''; p.versionOk = true; p.health = { ok: true }; continue; }
     const bin = binName(p.command);
     try {
-      execFileSync(whichCmd, [bin], { stdio: 'ignore' });
+      execFileSync(whichCmd, [bin], { stdio: 'ignore', windowsHide: true });
       p.available = true;
       p.version = getInstalledVersion(bin);
       p.versionOk = !p.minVersion || (p.version && compareVersions(p.version, p.minVersion) >= 0);
@@ -240,7 +240,7 @@ function detectTelemetryConfig(c) {
 const appVersion = require('./package.json').version;
 
 function configForClient() {
-  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion };
+  return { ...cfg, commands: filterClientCommands(cfg.commands), pluginsDir: plugins.PLUGINS_DIR, version: appVersion, bootId: BOOT_ID };
 }
 
 function remoteCliEnv() {
@@ -356,6 +356,7 @@ function onConnection(ws) {
       case 'rename':          sessions.rename(msg); break;
       case 'resumable.rename': sessions.renameResumable(msg, cfg); break;
       case 'close':           sessions.close(msg, cfg); break;
+      case 'server.restart':  console.log('[restart] server.restart message received from client'); require('./server.js').requestRestart(); break;
 
       case 'config.get':
         ws.send(JSON.stringify({ type: 'config', config: configForClient() }));
@@ -441,6 +442,13 @@ function onConnection(ws) {
         break;
       }
 
+      // Drag-to-reorder dropped a session into a new sidebar position.
+      // Client sends the full id sequence post-drop; server reorders the
+      // in-memory Map + resumable list and broadcasts so other clients sync.
+      case 'session.reorder':
+        sessions.reorderSessions(msg.ids, cfg);
+        break;
+
       // Client reports latest preview text — stored in memory, persisted by auto-save
       case 'session.setPreview':
         sessions.setPreview(msg.id, msg.text, msg.timestamp);
@@ -471,7 +479,7 @@ function onConnection(ws) {
           : process.platform === 'win32'
             ? 'explorer'
             : 'xdg-open';
-        execFile(cmd, [proj.path], { shell: process.platform === 'win32' }, (err) => {
+        execFile(cmd, [proj.path], { shell: process.platform === 'win32', windowsHide: true }, (err) => {
           ws.send(JSON.stringify({
             type: 'project.openPath.result',
             id: msg.id,
@@ -570,9 +578,9 @@ function onConnection(ws) {
 
       case 'remote.status': {
         let installed = false;
-        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore' }); installed = true; } catch {}
+        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore', windowsHide: true }); installed = true; } catch {}
         if (!installed) { ws.send(JSON.stringify({ type: 'remote.status', installed: false })); break; }
-        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err, stdout) => {
+        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
           if (err) { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); return; }
           try { ws.send(JSON.stringify({ type: 'remote.status', installed: true, ...JSON.parse(stdout) })); }
           catch { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); }
@@ -582,7 +590,7 @@ function onConnection(ws) {
       }
 
       case 'remote.pair': {
-        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err, stdout) => {
+        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
           if (err) { ws.send(JSON.stringify({ type: 'remote.error', error: err.message })); return; }
           try { ws.send(JSON.stringify({ type: 'remote.paired', ...JSON.parse(stdout) })); }
           catch { ws.send(JSON.stringify({ type: 'remote.error', error: 'Invalid response from clideck-remote' })); }
@@ -591,7 +599,7 @@ function onConnection(ws) {
       }
 
       case 'remote.unpair': {
-        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32', env: remoteCliEnv() }, (err) => {
+        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err) => {
           if (err) {
             ws.send(JSON.stringify({ type: 'remote.error', error: err.message }));
           } else {
@@ -608,7 +616,7 @@ function onConnection(ws) {
 
       case 'remote.install': {
         const proc = require('child_process').spawn('npm', ['install', '-g', 'clideck-remote'], {
-          shell: true, stdio: ['ignore', 'pipe', 'pipe'],
+          shell: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
         proc.stdout.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
         proc.stderr.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));

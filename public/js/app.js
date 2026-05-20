@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
 import { renderSettings, updateVersionFooter } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
@@ -28,6 +28,63 @@ const PONG_TIMEOUT_MS = 10000;
 let heartbeatTimer = null;
 let pongTimer = null;
 let lastDropToastId = null;
+// Tracks the per-process bootId broadcast by the server in `config`. When it
+// changes (a different value than the one we previously stored), a different
+// clideck process is answering — i.e. the in-UI Restart actually landed. We
+// use that signal to swap the sticky "Restarting…" toast for a confirmation
+// instead of guessing from the socket reopen alone.
+let lastServerBootId = null;
+let restartPending = false;
+
+// ── Connection lozenge (lower-left of the page) ──
+// Lance asked for an unambiguous "am I connected?" indicator with uptime
+// + version. Green when the WebSocket is OPEN, red when not. Flips
+// instantly on ws.onopen/onclose; a 1s tick keeps the uptime string
+// fresh without polling the server.
+let connectedAt = null;
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60)   return `${s}s`;
+  const m = Math.floor(s / 60), rem = s % 60;
+  if (m < 60)   return `${m}m ${rem}s`;
+  const h = Math.floor(m / 60), mrem = m % 60;
+  return `${h}h ${mrem}m`;
+}
+function renderStatusBadge() {
+  const badge = document.getElementById('app-status-badge');
+  const dot   = document.getElementById('app-status-dot');
+  const text  = document.getElementById('app-status-text');
+  if (!badge || !dot || !text) return;
+  const open = state.ws && state.ws.readyState === WebSocket.OPEN && connectedAt;
+  const v    = state.cfg?.version ? `v${state.cfg.version}` : '';
+  badge.classList.remove(
+    'bg-slate-800/80', 'border-slate-700/60', 'text-slate-400',
+    'bg-emerald-900/50', 'border-emerald-700/50', 'text-emerald-300',
+    'bg-red-900/50', 'border-red-700/50', 'text-red-300',
+  );
+  dot.classList.remove('bg-slate-500', 'bg-emerald-400', 'bg-red-400', 'animate-pulse');
+  if (open) {
+    badge.classList.add('bg-emerald-900/50', 'border-emerald-700/50', 'text-emerald-300');
+    dot.classList.add('bg-emerald-400');
+    const up = fmtUptime(Date.now() - connectedAt);
+    text.textContent = `connected · ${up}${v ? ' · ' + v : ''}`;
+  } else {
+    badge.classList.add('bg-red-900/50', 'border-red-700/50', 'text-red-300');
+    dot.classList.add('bg-red-400', 'animate-pulse');
+    text.textContent = restartPending ? 'restarting…' : 'disconnected · reconnecting…';
+  }
+}
+window.__refreshStatusBadge = renderStatusBadge;
+setInterval(renderStatusBadge, 1000);
+// settings.js fires this on click — authoritative signal that a restart was
+// requested. We do NOT rely on the server's `server.restarting` broadcast
+// for this because that frame can be dropped on process.exit before
+// reaching the wire (the Windows-specific failure mode behind the bug in
+// 7f33cbf v1).
+window.addEventListener('clideck:restart-requested', () => {
+  restartPending = true;
+  console.log('[restart] restartPending=true (click signal)');
+});
 
 function clearHeartbeat() {
   if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
@@ -51,9 +108,13 @@ function startHeartbeat() {
 
 function connect() {
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (restartPending) console.log('[restart] connect() called (pending restart) → ws://' + location.host);
   state.ws = new WebSocket(`${wsProtocol}//${location.host}`);
 
   state.ws.onopen = () => {
+    if (restartPending) console.log('[restart] ws opened — awaiting config with new bootId');
+    connectedAt = Date.now();
+    renderStatusBadge();
     reconnectReplaySkip = new Set(state.terms.keys());
     if (lastDropToastId) {
       showToast('Reconnected', { id: lastDropToastId, type: 'success', duration: 2000 });
@@ -69,7 +130,26 @@ function connect() {
       case 'pong':
         if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
         break;
-      case 'config':
+      case 'config': {
+        const incomingBootId = msg.config?.bootId || null;
+        console.log('[restart] config arrived bootId=' + incomingBootId + ' (prev=' + lastServerBootId + ', restartPending=' + restartPending + ')');
+        if (lastServerBootId && incomingBootId && incomingBootId !== lastServerBootId && restartPending) {
+          // A different process is answering — restart confirmed up.
+          // Replace the sticky warn toast with a transient success and
+          // reset the restart button so the user can do it again.
+          console.log('[restart] bootId changed + restart was pending → swapping toast + resetting button');
+          showToast(`Reloaded — clideck v${msg.config.version || ''}`.trim(), {
+            id: 'server-restarting',
+            type: 'success',
+            duration: 2500,
+          });
+          const btn = document.getElementById('btn-server-restart');
+          if (btn) { btn.disabled = false; btn.textContent = 'Restart clideck'; }
+          const restartStatus = document.getElementById('server-restart-status');
+          if (restartStatus) restartStatus.textContent = '';
+          restartPending = false;
+        }
+        if (incomingBootId) lastServerBootId = incomingBootId;
         state.cfg = msg.config;
         applyMode(state.cfg.colorMode || 'dark');
         regroupSessions();
@@ -78,6 +158,7 @@ function connect() {
         refreshCreator();
         for (const [, entry] of state.terms) applyTheme(entry.term, entry.themeId);
         break;
+      }
       case 'themes':
         state.themes = msg.themes;
         renderSettings();
@@ -96,6 +177,13 @@ function connect() {
       case 'sessions.resumable':
         state.resumable = msg.list;
         renderResumable();
+        break;
+      case 'sessions.reorder':
+        // Server confirmed (or another client initiated) a drag-to-reorder.
+        // Rebuild the local Maps to match — the originating client already
+        // did this optimistically, so this is a no-op there; on other
+        // clients it's the live sync.
+        reorderTerms(msg.ids);
         break;
       case 'error':
         showToast(msg.message || 'CliDeck action failed.', { type: 'error', title: 'CliDeck Error', duration: 5000 });
@@ -123,12 +211,34 @@ function connect() {
         if (msg.replay && reconnectReplaySkip?.has(msg.id) && entry) break;
         if (entry && !entry.queue(msg.data)) entry.term.write(msg.data);
         updatePreview(msg.id);
-        markUnread(msg.id);
+        // Primary unread trigger is the working→idle transition inside
+        // setStatus (terminals.js) — it gates the dot so it can't collide
+        // with the bouncing "working" indicator. This fallback path only
+        // fires for passive output (a session that never enters working
+        // state, e.g. a `tail -f` in a Shell preset), so the dot still
+        // flags unattended activity for non-agent sessions.
+        if (entry && !entry.working) markUnread(msg.id);
         break;
       }
       case 'closed':
         removeTerminal(msg.id);
         break;
+      case 'server.restarting': {
+        // Surface a sticky toast so every connected client knows what's
+        // about to happen. The existing onclose reconnect loop will pick
+        // up the disconnect ~200ms later and show its own
+        // "reconnecting…" toast; both can coexist. The sticky toast
+        // here is swapped for a success confirmation once the post-
+        // reconnect `config` arrives with a different bootId.
+        console.log('[restart] server.restarting broadcast received');
+        restartPending = true;
+        showToast('Restarting clideck — page will reconnect automatically.', {
+          duration: 0,
+          id: 'server-restarting',
+          type: 'warn',
+        });
+        break;
+      }
       case 'session.recovered': {
         // The server tried to resume a dormant session, the underlying
         // agent couldn't find that conversation, so it spawned a fresh
@@ -383,7 +493,10 @@ function connect() {
     }
   };
 
-  state.ws.onclose = () => {
+  state.ws.onclose = (ev) => {
+    if (restartPending) console.log('[restart] ws closed (code=' + ev.code + ', reason=' + (ev.reason || '') + ') → reconnect in 1s');
+    connectedAt = null;
+    renderStatusBadge();
     clearHeartbeat();
     if (!lastDropToastId) {
       lastDropToastId = `ws-reconnect-${Date.now()}`;
@@ -1073,13 +1186,31 @@ function renderBulkImportModal(msg) {
   modal.querySelector('#bi-cancel').addEventListener('click', closeBulkImport);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeBulkImport(); });
   const selectAll = modal.querySelector('#bi-select-all');
+  const syncMaster = () => {
+    if (!selectAll) return;
+    const rows = modal.querySelectorAll('.bi-row');
+    if (rows.length === 0) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+      return;
+    }
+    const checked = modal.querySelectorAll('.bi-row:checked').length;
+    selectAll.checked = checked === rows.length;
+    selectAll.indeterminate = checked > 0 && checked < rows.length;
+  };
   if (selectAll) {
     selectAll.addEventListener('change', () => {
+      // Browser clears indeterminate on user click, but be explicit so the
+      // post-click state matches what syncMaster would compute.
+      selectAll.indeterminate = false;
       for (const cb of modal.querySelectorAll('.bi-row')) cb.checked = selectAll.checked;
       updateCount();
     });
   }
-  for (const cb of modal.querySelectorAll('.bi-row')) cb.addEventListener('change', updateCount);
+  for (const cb of modal.querySelectorAll('.bi-row')) {
+    cb.addEventListener('change', () => { updateCount(); syncMaster(); });
+  }
+  syncMaster();
 
   modal.querySelector('#bi-ok').addEventListener('click', async () => {
     const picked = [...modal.querySelectorAll('.bi-row:checked')].map(cb => ({

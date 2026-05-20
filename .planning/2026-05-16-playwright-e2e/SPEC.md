@@ -1,6 +1,6 @@
 # SPEC — Playwright E2E test framework for clideck
 
-**Status:** in progress
+**Status:** done (shipped 2026-05-16 — smoke + Ctrl+V paste suites, both passing as of 2026-05-19)
 **Owner:** Lance Keay
 **Date:** 2026-05-16
 **Follows:** [2026-05-16-ctrl-v-paste](../2026-05-16-ctrl-v-paste/SPEC.md)

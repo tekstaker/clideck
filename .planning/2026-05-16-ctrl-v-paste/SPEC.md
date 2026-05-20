@@ -1,6 +1,6 @@
 # SPEC — Ctrl+V paste binding for clideck terminals
 
-**Status:** in progress
+**Status:** done (landed `9f4f20f`, 2026-05-16)
 **Owner:** Lance Keay
 **Date:** 2026-05-16
 

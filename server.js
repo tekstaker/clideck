@@ -23,7 +23,7 @@ function checkSelfUpdate() {
     // Skip in non-interactive or local dev contexts
     if (!process.stdin.isTTY || !process.stdout.isTTY) return ok();
     if (!__dirname.includes(join('node_modules', 'clideck'))) return ok();
-    execFile('npm', ['view', 'clideck', 'version'], { shell: shellOpt, timeout: 10000 }, (err, stdout) => {
+    execFile('npm', ['view', 'clideck', 'version'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err, stdout) => {
       if (err) return ok();
       const latest = stdout.trim();
       if (!latest || latest === currentVersion) return ok();
@@ -284,24 +284,163 @@ const wss = new WebSocketServer({
   },
 });
 wss.on('connection', onConnection);
+// Without this listener, the WebSocketServer rethrows any error emitted by
+// the underlying http server — including EADDRINUSE during listen. That
+// rethrow crashes the process before tryListen's retry loop has a chance
+// to fire, which is what broke the in-UI restart on 2026-05-18 with PID
+// 12980 holding the port and child PID 40804 dying immediately. Logging
+// the error is enough — onListenError below handles the actual retry and
+// any post-bind socket error from the WSS side is informational.
+wss.on('error', (err) => {
+  console.error('[wss] error:', err.code || err.message);
+});
 
 const activity = require('./activity');
 activity.start(sessions.getSessions(), sessions.broadcast);
 sessions.startAutoSave(() => require('./handlers').getConfig());
 
-// Graceful shutdown: persist sessions before exit
+// Graceful shutdown: persist sessions before exit. Each step is isolated in
+// its own try/catch so one stuck step (e.g. a node-pty.kill() that won't
+// return) can't prevent process.exit() from running and releasing port
+// 4000 — which is what stranded PID 12980 on 2026-05-18.
 const { getConfig } = require('./handlers');
 function onShutdown() {
-  plugins.shutdown();
-  activity.stop();
-  sessions.shutdown(getConfig());
+  try { plugins.shutdown(); }            catch (e) { console.error('[shutdown] plugins:',  e.message); }
+  try { activity.stop(); }               catch (e) { console.error('[shutdown] activity:', e.message); }
+  try { sessions.shutdown(getConfig()); } catch (e) { console.error('[shutdown] sessions:', e.message); }
   process.exit(0);
 }
 process.on('SIGINT', onShutdown);
 process.on('SIGTERM', onShutdown);
 
-server.listen(PORT, HOST, () => {
+// In-process restart, wrapper-coordinated:
+//
+//   [this clideck]  ──spawns──>  [lib/restart-wrapper.js]  ──spawns──>  [new clideck]
+//          │                            │                                     │
+//          └─exits via onShutdown───────┘                                     │
+//                                       │                                     │
+//                                       └─waits for parent exit + port free──┘
+//                                       └─waits for new clideck to bind, then exits 0
+//
+// The wrapper is the neutral observer: a 5KB script with no plugins,
+// no PTYs, no WSS. It can't hang on any of the things clideck can hang
+// on. By spawning the new clideck from the wrapper rather than from us
+// directly, the new clideck isn't entangled in our death sequence — it
+// has a clean parent that exits cleanly when its job is done.
+//
+// The browser's existing WebSocket reconnect loop in app.js handles
+// the disconnect/reconnect window — the user sees a "Restarting…" toast
+// that gets cleared once the new process announces itself with a
+// different bootId.
+//
+// The 200ms broadcast→shutdown delay gives in-flight `server.restarting`
+// messages time to reach every client before we kill their sockets.
+// node-pty PTYs in this process are torn down by sessions.shutdown(),
+// which also persists the resumable list so it survives the restart.
+function openRestartLog() {
+  try {
+    const fs = require('fs');
+    const { DATA_DIR } = require('./paths');
+    const logPath = join(DATA_DIR, 'restart.log');
+    // One-generation rotation: if the current log is >1MB, roll it to
+    // restart.log.1 (overwriting any prior generation) before opening
+    // fresh. Keeps disk use bounded without needing a real log lib.
+    try {
+      const st = fs.statSync(logPath);
+      if (st.size > 1024 * 1024) {
+        try { fs.renameSync(logPath, logPath + '.1'); } catch { /* noop */ }
+      }
+    } catch { /* file doesn't exist yet — fine */ }
+    const fd = fs.openSync(logPath, 'a');
+    fs.writeSync(fd, `\n[${new Date().toISOString()}] parent ${process.pid} requesting restart\n`);
+    return fd;
+  } catch {
+    return null;
+  }
+}
+
+function requestRestart() {
+  console.log('[restart] requestRestart() — broadcasting server.restarting');
+  try { sessions.broadcast({ type: 'server.restarting' }); } catch { /* noop */ }
+  // Hard-exit watchdog: if anything in onShutdown's call chain hangs
+  // synchronously (a stubborn PTY, a plugin's shutdown handler, etc.),
+  // the parent never releases port 4000 and the child fails EADDRINUSE
+  // forever. After 3s of "we should be gone by now", force exit.
+  setTimeout(() => {
+    console.error('[restart] shutdown watchdog tripped at 3s — forcing process.exit(1)');
+    process.exit(1);
+  }, 3000);
+  setTimeout(() => {
+    console.log('[restart] 200ms elapsed — spawning restart wrapper');
+    try {
+      const { spawn } = require('child_process');
+      const logFd = openRestartLog();
+      // Instead of spawning the replacement clideck directly, we spawn a
+      // tiny neutral wrapper (lib/restart-wrapper.js). The wrapper waits
+      // for THIS process to exit, waits for the port to be free, then
+      // spawns the new clideck and exits once it's verified listening.
+      // Two big wins over the direct-spawn pattern:
+      //   1. The new clideck is the wrapper's child, not ours — so it
+      //      isn't entangled with our death sequence (Windows console
+      //      ownership, job objects, the works).
+      //   2. The wrapper is the neutral observer: if the handoff fails
+      //      partway, restart.log captures exactly which stage broke.
+      const wrapperPath = join(__dirname, 'lib', 'restart-wrapper.js');
+      const wrapperEnv = {
+        ...process.env,
+        CLIDECK_RESTART_PARENT_PID: String(process.pid),
+        CLIDECK_RESTART_PORT: String(PORT),
+        CLIDECK_RESTART_ARGV: JSON.stringify(process.argv),
+      };
+      const child = spawn(process.argv[0], [wrapperPath], {
+        detached: true,
+        stdio: ['ignore', logFd || 'ignore', logFd || 'ignore'],
+        env: wrapperEnv,
+        windowsHide: true,
+      });
+      child.unref();
+      console.log('[restart] spawned restart wrapper PID=' + child.pid + ' (log → ~/.clideck/restart.log)');
+      if (logFd != null) {
+        try { require('fs').closeSync(logFd); } catch { /* child still holds it */ }
+      }
+    } catch (e) {
+      console.error('[restart] failed to spawn replacement:', e.message);
+    }
+    console.log('[restart] calling onShutdown() — parent exiting');
+    onShutdown();
+  }, 200);
+}
+module.exports = { requestRestart };
+
+// Retry the bind for ~6s on EADDRINUSE. The in-UI restart spawns a
+// replacement clideck before the parent's process.exit() has released
+// the port; without this retry the child would die on first bind and
+// disappear silently (Windows holds the port slightly longer than the
+// 200ms broadcast→exit delay accounts for). Any other listen error is
+// fatal and exits 1.
+const LISTEN_RETRY_LIMIT = 30;
+const LISTEN_RETRY_DELAY_MS = 200;
+let listenAttempt = 0;
+function tryListen() {
+  server.once('error', onListenError);
+  server.listen(PORT, HOST, onListenOk);
+}
+function onListenError(err) {
+  if (err.code === 'EADDRINUSE' && listenAttempt < LISTEN_RETRY_LIMIT) {
+    listenAttempt++;
+    if (listenAttempt === 1) {
+      console.log(`\x1b[38;5;245m  ▸ port ${PORT} busy — waiting for previous clideck to release it…\x1b[0m`);
+    }
+    setTimeout(tryListen, LISTEN_RETRY_DELAY_MS);
+    return;
+  }
+  console.error(`[clideck] failed to bind ${HOST}:${PORT}: ${err.message}`);
+  process.exit(1);
+}
+function onListenOk() {
   const v = require('./package.json').version;
+  const { BOOT_ID } = require('./runtime');
+  console.log(`[restart] booted v${v} pid=${process.pid} bootId=${BOOT_ID} on ${HOST}:${PORT}`);
   const url = localUrl();
   const clickableUrl = terminalLink(url);
   const urlHint = openUrlHint();
@@ -322,6 +461,7 @@ server.listen(PORT, HOST, () => {
 \x1b[38;5;252m  ▸ Ready at \x1b[38;5;44m${clickableUrl}\x1b[38;5;245m (${urlHint})\x1b[0m
 \x1b[38;5;245m  ▸ Stop with \x1b[38;5;252mCtrl+C\x1b[38;5;245m · Restart anytime with \x1b[38;5;252mclideck\x1b[0m
 ${HOST !== '127.0.0.1' ? '\x1b[38;5;208m  ▸ Warning: listening on ' + HOST + ' — no authentication, anyone on the network can connect\x1b[0m\n' : ''}`);
-});
+}
+tryListen();
 
 }); // checkSelfUpdate

@@ -102,11 +102,24 @@ function startDrag(ds) {
 }
 
 // --- Session drop target ---
+//
+// Three drop modes for session drags, evaluated in this order:
+//
+//   1. project header     → move to that project (cross-group)
+//   2. between-rows gap   → reorder within the dragged session's own
+//                            group (or the ungrouped area)
+//   3. above-first-group  → ungroup (move out of any project)
+//
+// Within-group reorder draws a `.session-drop-line` (alias of
+// `.project-drop-line` styling — see input.css). Cross-group moves
+// keep the existing `.drop-highlight` ring on the target header.
 
 function updateDropTarget(clientY) {
   document.querySelectorAll('.drop-highlight').forEach(el => el.classList.remove('drop-highlight'));
+  document.querySelectorAll('.session-drop-line').forEach(el => el.remove());
   dragState.dropTarget = null;
 
+  // 1. Drop on a project header → cross-group move.
   for (const header of document.querySelectorAll('.project-header')) {
     const rect = header.getBoundingClientRect();
     if (clientY >= rect.top && clientY <= rect.bottom) {
@@ -116,6 +129,52 @@ function updateDropTarget(clientY) {
     }
   }
 
+  // 2. Within-group reorder — only the dragged row's own group qualifies.
+  const draggedEntry = state.terms.get(dragState.id);
+  if (draggedEntry) {
+    const container = draggedEntry.projectId
+      ? document.querySelector(`.project-group[data-project-id="${draggedEntry.projectId}"] .project-sessions`)
+      : null;
+    const peerRows = container
+      ? [...container.querySelectorAll('.group[data-id]')]
+      // Ungrouped rows are siblings of the project groups inside #session-list.
+      : [...document.querySelectorAll('#session-list > .group[data-id]')];
+
+    if (peerRows.length) {
+      const dragIdx = peerRows.indexOf(dragState.row);
+      for (let i = 0; i <= peerRows.length; i++) {
+        let edgeTop, edgeBottom;
+        if (i === 0) {
+          const rect = peerRows[0].getBoundingClientRect();
+          edgeTop = rect.top - 8;
+          edgeBottom = (rect.top + peerRows[0].getBoundingClientRect().bottom) / 2;
+        } else if (i === peerRows.length) {
+          const rect = peerRows[peerRows.length - 1].getBoundingClientRect();
+          edgeTop = (rect.top + rect.bottom) / 2;
+          edgeBottom = rect.bottom + 8;
+        } else {
+          const above = peerRows[i - 1].getBoundingClientRect();
+          const below = peerRows[i].getBoundingClientRect();
+          edgeTop = (above.top + above.bottom) / 2;
+          edgeBottom = (below.top + below.bottom) / 2;
+        }
+        if (clientY >= edgeTop && clientY < edgeBottom) {
+          // No-op drop slots: same position, or adjacent to the dragged row.
+          if (dragIdx >= 0 && (i === dragIdx || i === dragIdx + 1)) return;
+
+          dragState.dropTarget = { type: 'reorder', insertBefore: i };
+          const line = document.createElement('div');
+          line.className = 'session-drop-line';
+          const ref = i < peerRows.length ? peerRows[i] : null;
+          if (ref) ref.parentNode.insertBefore(line, ref);
+          else if (peerRows.length) peerRows[peerRows.length - 1].parentNode.appendChild(line);
+          return;
+        }
+      }
+    }
+  }
+
+  // 3. Above the first project group → ungroup.
   const firstGroup = document.querySelector('.project-group');
   if (firstGroup) {
     const rect = firstGroup.getBoundingClientRect();
@@ -180,6 +239,7 @@ function endDrag() {
     el.classList.remove('drop-highlight', 'drop-zone');
   });
   document.querySelectorAll('.project-drop-line').forEach(el => el.remove());
+  document.querySelectorAll('.session-drop-line').forEach(el => el.remove());
 
   if (!ds.dropTarget) return;
 
@@ -190,6 +250,9 @@ function endDrag() {
       setSessionProject(ds.id, ds.dropTarget.projectId);
     } else if (ds.dropTarget.type === 'ungrouped' && entry.projectId) {
       setSessionProject(ds.id, null);
+    } else if (ds.dropTarget.type === 'reorder') {
+      suppressClick = true;
+      reorderSessionWithin(ds.id, entry.projectId, ds.dropTarget.insertBefore);
     }
   } else if (ds.mode === 'project' && ds.dropTarget.type === 'reorder') {
     const projects = state.cfg.projects || [];
@@ -213,5 +276,48 @@ function cancelDrag() {
       el.classList.remove('drop-highlight', 'drop-zone');
     });
     document.querySelectorAll('.project-drop-line').forEach(el => el.remove());
+    document.querySelectorAll('.session-drop-line').forEach(el => el.remove());
   }
+}
+
+// Move `movingId` to slot `insertBefore` among its same-group peers
+// (peers = sessions sharing `projectId`, or the ungrouped set when
+// projectId is null). Sends `session.reorder` with the full new id
+// sequence so the server is the source of truth — even pure same-group
+// reorders ship the whole order, mirroring how project reorder ships
+// the whole `cfg.projects` array.
+function reorderSessionWithin(movingId, projectId, insertBefore) {
+  const ids = [...state.terms.keys()];
+  const peers = ids.filter(id => (state.terms.get(id)?.projectId ?? null) === (projectId ?? null));
+  const localFrom = peers.indexOf(movingId);
+  if (localFrom < 0) return;
+  let localTo = insertBefore;
+  if (localTo > localFrom) localTo--;
+  if (localTo === localFrom) return;
+
+  const [moved] = peers.splice(localFrom, 1);
+  peers.splice(localTo, 0, moved);
+
+  // Walk the original sequence; when we hit a member of the moving
+  // group, pull the next id from the reordered peers list. This keeps
+  // every non-peer session at its original sidebar position.
+  const peerSet = new Set(peers);
+  const merged = [];
+  let pc = 0;
+  for (const id of ids) {
+    if (peerSet.has(id)) merged.push(peers[pc++]);
+    else merged.push(id);
+  }
+
+  send({ type: 'session.reorder', ids: merged });
+
+  // Optimistic local apply — rebuild state.terms in the merged order
+  // so regroupSessions() renders the new sequence immediately, without
+  // waiting for the server's `sessions.reorder` broadcast to round-trip.
+  const rebuilt = new Map();
+  for (const id of merged) {
+    if (state.terms.has(id)) rebuilt.set(id, state.terms.get(id));
+  }
+  state.terms = rebuilt;
+  regroupSessions();
 }
