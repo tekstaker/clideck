@@ -1,6 +1,6 @@
 # SPEC — Paste binary blobs into clideck sessions
 
-**Status:** in progress
+**Status:** done (closed out 2026-05-20 — v1.31.7; commits `eb4ad43` + `00e072d` + `175982e` + `4730f10`)
 **Owner:** Lance Keay
 **Date:** 2026-05-20
 **Promoted from:** `.planning/todos/pending/2026-05-20-paste-blobs-into-sessions.md`
