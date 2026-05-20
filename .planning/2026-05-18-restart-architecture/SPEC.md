@@ -1,6 +1,6 @@
 # SPEC — Wrapper-process restart architecture (and lozenge polish)
 
-**Status:** mostly shipped, pending tooltip + relocation + end-to-end verification
+**Status:** mostly shipped, pending tooltip + restart-hang fix (relocation done 2026-05-20 in `58d1795` on `feat/lozenge-relocation`)
 **Owner:** Lance Keay
 **Date:** 2026-05-18
 

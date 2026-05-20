@@ -131,11 +131,6 @@
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
 </head>
 <body class="flex h-screen bg-slate-950 text-slate-200 font-sans overflow-hidden">
-  <!-- Always-visible connection lozenge (lower-left). pointer-events-none so it doesn't block clicks on the nav rail it sits over. Color/text driven by app.js; green when WebSocket is OPEN, red when not. -->
-  <div id="app-status-badge" class="fixed bottom-1.5 left-1.5 z-50 select-none pointer-events-none px-2.5 py-1 rounded-full text-[10px] font-mono leading-none flex items-center gap-1.5 bg-slate-800/80 border border-slate-700/60 text-slate-400 backdrop-blur-sm transition-colors duration-200">
-    <span id="app-status-dot" class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
-    <span id="app-status-text">connecting…</span>
-  </div>
   <div id="mobile-sidebar-backdrop" aria-hidden="true"></div>
 
   <div id="sidebar-shell">
@@ -186,6 +181,17 @@
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13l2 2 4-4"/></svg>
           </button>
           <button class="icon-btn w-7 h-7 flex items-center justify-center rounded-md border border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-colors text-sm" id="btn-new" title="New session">+</button>
+        </div>
+      </div>
+      <!-- Connection lozenge — moved here from the lower-left corner so its
+           state (connected / disconnected, uptime, server version) is
+           prominent under the cli​deck title instead of tucked beneath the
+           main panel where it could be missed. Same IDs as before, app.js
+           drives the dot colour + text content unchanged. -->
+      <div class="px-3 pb-1.5">
+        <div id="app-status-badge" class="select-none px-2.5 py-1 rounded-full text-[10px] font-mono leading-none inline-flex items-center gap-1.5 bg-slate-800/80 border border-slate-700/60 text-slate-400 transition-colors duration-200">
+          <span id="app-status-dot" class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+          <span id="app-status-text">connecting…</span>
         </div>
       </div>
       <div class="px-2.5 pb-2.5 flex flex-col gap-2">
