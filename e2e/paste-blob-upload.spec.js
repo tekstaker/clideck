@@ -87,14 +87,14 @@ const TINY_PNG_BYTES = Buffer.from([
 
 test.describe('paste-blob upload endpoint', () => {
 
-  test('POST /sessions/:id/paste-blob writes the blob and broadcasts a confirmation', async ({ page, baseURL }) => {
+  test('POST /sessions/:id/paste-blob writes the blob and injects the path into the PTY', async ({ page, baseURL }) => {
     await installWsRecorder(page);
     await page.goto('/');
     await waitForAppReady(page);
 
     const sessionId = await spawnSession(page);
-    // Snapshot the rxMessages length before the upload so we can find
-    // only the confirmation that lands AFTER our POST.
+    // Snapshot the rxMessages length before the upload so we only look
+    // at frames that arrive AFTER our POST.
     const beforeCount = await page.evaluate(() => /** @type {any} */ (window).__rxMessages.length);
 
     const upload = await page.request.post(`${baseURL}/sessions/${sessionId}/paste-blob`, {
@@ -109,14 +109,17 @@ test.describe('paste-blob upload endpoint', () => {
     expect(json.path).toMatch(/^\.clideck\/paste\/.+\.png$/);
     expect(json.filename).toMatch(/\.png$/);
 
-    // The server broadcasts a `\r\n[clideck] pasted image/png → …\r\n`
-    // output frame for the session. The client recorder captures it.
-    await expect.poll(() => page.evaluate(({ beforeCount, sessionId }) => {
+    // The server writes the relative path to the PTY's stdin so the
+    // running agent actually sees it (not just xterm's display buffer).
+    // The shell echoes typed characters back as `output` frames; we
+    // assert at least one of those carries the path substring.
+    const filename = json.filename;
+    await expect.poll(() => page.evaluate(({ beforeCount, sessionId, filename }) => {
       /** @type {any} */ const w = window;
       return w.__rxMessages.slice(beforeCount).filter(
-        m => m.type === 'output' && m.id === sessionId && /\[clideck\] pasted image\/png/.test(m.data)
+        m => m.type === 'output' && m.id === sessionId && m.data.includes(filename)
       ).length;
-    }, { beforeCount, sessionId }), { timeout: 5_000 }).toBeGreaterThan(0);
+    }, { beforeCount, sessionId, filename }), { timeout: 5_000 }).toBeGreaterThan(0);
   });
 
   test('unknown session id returns 404', async ({ page, baseURL }) => {

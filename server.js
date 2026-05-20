@@ -290,13 +290,17 @@ const server = http.createServer((req, res) => {
         writeFileSync(target, Buffer.concat(chunks));
         const filename = target.split(/[\\/]/).pop();
         const relPath = `.clideck/paste/${filename}`;
-        // Echo a confirmation into the session's terminal stream so
-        // the user (and the agent's scrollback) both see what landed.
-        sessions.broadcast({
-          type: 'output',
-          id: sessionId,
-          data: `\r\n\x1b[2m[clideck] pasted ${mime} → ${relPath}\x1b[0m\r\n`,
-        });
+        // Inject the path into the PTY's stdin so the agent actually
+        // sees it. Broadcasting an `output` frame only writes to
+        // xterm's display buffer — the agent process (Claude Code,
+        // Codex, etc.) reads from its own stdin, not from xterm. By
+        // writing to s.pty.write we put the path at the user's
+        // cursor as if they'd typed it; user can prepend "describe
+        // this " or hit enter as a bare ls/cat arg. Trailing space
+        // so the next character types after it cleanly.
+        try { sess.pty.write(relPath + ' '); } catch (e) {
+          console.error('[paste-blob] pty.write threw:', e.message);
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, path: relPath, filename, sizeBytes: received, mime }));
       } catch (e) {

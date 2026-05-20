@@ -590,6 +590,24 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   term.open(el);
   attachToTerminal(term, presetId);
   const linkProvider = addLinkProvider(term);
+
+  // Drop overlay — covers the whole term-wrap with a modal-ish
+  // dashed-border target during file drag. Hidden by default; the
+  // `.drag-target` class on el reveals it. Lives inside el so it
+  // moves with the active terminal.
+  const dropOverlay = document.createElement('div');
+  dropOverlay.className = 'drop-overlay';
+  dropOverlay.innerHTML = `
+    <div class="drop-overlay-card">
+      <svg class="w-10 h-10 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <div class="drop-overlay-title">Drop to attach to session</div>
+      <div class="drop-overlay-sub">File lands in <code>.clideck/paste/</code> and the path is typed into your prompt.</div>
+    </div>`;
+  el.appendChild(dropOverlay);
   const onContextMenu = (e) => {
     if (e.shiftKey) return;
     e.preventDefault();
