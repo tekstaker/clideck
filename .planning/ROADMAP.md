@@ -4,7 +4,7 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Active phase
 
-- [2026-05-19-session-pause](2026-05-19-session-pause/SPEC.md) — "Pause" action on active sessions: kill PTY, persist `sessionToken`, move row to Previous Sessions. Reuses the natural-exit code path via a shared `moveToResumable()` helper. Work happening on `feat/session-pause`.
+- [2026-05-20-paste-blobs](2026-05-20-paste-blobs/SPEC.md) — Paste binary clipboard content (screenshots, zips, PDFs) via Ctrl+V into a session — server writes the blob to `<cwd>/.clideck/paste/<name>` and echoes a confirmation line into the terminal stream so the running agent can read the file by path. Work happening on `feat/paste-blobs`.
 
 ## Parked
 
@@ -12,10 +12,11 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Queued phases
 
-- _(none — session-pause is now active, see above)_
+- _(none — paste-blobs is now active, see above)_
 
 ## Completed phases
 
+- [2026-05-19-session-pause](2026-05-19-session-pause/SPEC.md) — "Pause" action on active sessions: kill PTY, preserve the captured `sessionToken`, move the row to Previous Sessions via the shared `moveToResumable()` helper. Two follow-up fixes after initial UAT: centralised five token-capture paths through `sessions.captureToken()` and propagated `hasToken` through the `created` broadcast for resumed sessions. ✅ closed out 2026-05-20 on `feat/session-pause` (`66942c5` + `ae752f0` + `2508383`).
 - [2026-05-19-terminal-ux](2026-05-19-terminal-ux/SPEC.md) — Auto-copy on terminal selection (with deduped toast) and Ctrl/Cmd+click to open http(s) URLs from terminal output in a new tab. Plain click preserves text-selection on purpose — diverges from upstream `85246f6` which opens on plain click. ✅ closed out 2026-05-20 on `feat/terminal-ux` (`8fa1def`; 49 unit + 17 E2E green; UAT passed).
 - [2026-05-19-session-polish](2026-05-19-session-polish/SPEC.md) — Drag-to-reorder sessions within their project group (or the ungrouped area) with full server-persisted ordering, and unread-dot / working-indicator mutex so the two row-level signals stop firing simultaneously. ✅ closed out 2026-05-20 on `feat/session-polish` (`6b5450a` mutex, `108ccd4` drag-to-reorder; 34 unit tests + 14 E2E green).
 - [2026-05-17-session-ux](2026-05-17-session-ux/SPEC.md) — Per-row Rename/Delete on Previous Sessions, graceful failed-resume → fresh session, bulk project import, and select-all master-checkbox sync in the bulk-import modal. ✅ closed out 2026-05-19 on `feat/session-ux` (final criterion landed in `97b08c5`; UAT walked through all 11 acceptance criteria — every one passed).

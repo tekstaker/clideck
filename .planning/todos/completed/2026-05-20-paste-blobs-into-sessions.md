@@ -7,6 +7,9 @@ files:
   - public/js/hotkeys.js
   - server.js
   - handlers.js
+promoted: true
+promoted_to: .planning/2026-05-20-paste-blobs/SPEC.md
+promoted_at: 2026-05-20
 ---
 
 ## Problem
