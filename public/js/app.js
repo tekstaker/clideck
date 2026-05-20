@@ -205,6 +205,11 @@ function connect() {
         break;
       case 'created':
         if (!state.terms.has(msg.id)) addTerminal(msg.id, msg.name, msg.themeId, msg.commandId, msg.projectId, msg.muted, msg.lastPreview, msg.presetId, msg.cwd);
+        // Resumed sessions already carry a captured token — without
+        // propagating it here, the Pause menu item stays disabled
+        // until the agent emits a fresh token (which it usually
+        // won't during a resume — the token IS the resume key).
+        setHasToken(msg.id, !!msg.hasToken);
         select(msg.id);
         applyFilter();
         closeMobileSidebar();
