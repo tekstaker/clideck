@@ -1,0 +1,52 @@
+# Normalize line endings across Windows + Linux dev machines that share
+# this checkout on a mapped/mounted drive. Without this, files written
+# by Windows tools land as CRLF and Linux tools see them as modified
+# (~100-file phantom-modification storm with equal insert/delete counts).
+#
+# Pairs with `core.autocrlf=false` set globally on both machines so
+# neither git client second-guesses these directives.
+#
+# After landing this file the first time, run once:
+#   git add --renormalize . && git commit -m "Normalize line endings to LF"
+# to rewrite the index in LF. Subsequent checkouts on either OS will
+# then be consistent.
+
+* text=auto eol=lf
+
+# Explicit text — diffable, must be LF for tooling (npm scripts, shell
+# hooks, Python workers, etc.) to run on Linux.
+*.js     text eol=lf
+*.mjs    text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.html   text eol=lf
+*.css    text eol=lf
+*.svg    text eol=lf
+*.py     text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.sh     text eol=lf
+
+# Explicit binary — never normalize, never diff.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.mp3    binary
+*.npz    binary
+*.pdf    binary
+*.zip    binary
+*.tar    binary
+*.tar.gz binary
+*.gz     binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.eot    binary
+*.wasm   binary
+*.exe    binary
+*.dll    binary
+*.so     binary
+*.dylib  binary
+*.bin    binary
