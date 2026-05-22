@@ -1,0 +1,56 @@
+# EditorConfig — cross-editor formatting rules.
+# Read by Visual Studio, VS Code (built-in since 1.86), JetBrains IDEs,
+# Sublime Text, Notepad++ (with plugin), vim (with plugin), and others.
+# See https://editorconfig.org for the spec.
+#
+# This file is the editor-side companion to .gitattributes:
+#   - .gitattributes controls what gets stored in git's index
+#     (authoritative — wins even if editors misbehave).
+#   - .editorconfig controls what editors write to disk in the first place
+#     (so files are born with the right line endings; .gitattributes
+#     doesn't have to clean up after them).
+#
+# Notepad (classic Windows Notepad) does NOT honour editorconfig. Use
+# Notepad++, VS Code, or any modern editor for code. .gitattributes
+# catches Notepad's CRLF leakage at commit time as a backstop.
+
+root = true
+
+[*]
+# Cross-platform defaults: LF, UTF-8, no trailing whitespace, final newline.
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+charset = utf-8
+indent_style = space
+indent_size = 2
+
+# === Language-specific overrides ===========================================
+
+[*.{py,pyi}]
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab
+
+[*.go]
+indent_style = tab
+
+[*.{md,markdown}]
+# Trailing spaces in markdown can be intentional (two-space line break).
+trim_trailing_whitespace = false
+
+# === Windows-native shells: CRLF (matches .gitattributes) =================
+
+[*.{bat,cmd,ps1,psm1,psd1}]
+end_of_line = crlf
+
+# === Don't touch encrypted secrets ========================================
+# (sops manages these end-to-end; editors should leave them alone)
+
+[secrets/*.enc.*]
+insert_final_newline = false
+trim_trailing_whitespace = false
