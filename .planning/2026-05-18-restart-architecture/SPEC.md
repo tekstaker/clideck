@@ -1,6 +1,17 @@
 # SPEC — Wrapper-process restart architecture (and lozenge polish)
 
-**Status:** mostly shipped, pending tooltip + restart-hang fix (relocation done 2026-05-20 in `58d1795` on `feat/lozenge-relocation`)
+**Status:** PARKED — broken in-UI restart REMOVED from main 2026-05-27. The
+wrapper-process restart never worked reliably (modal hung, PTY sessions lost);
+on 2026-05-27 the whole in-UI *server* restart path was stripped out of `main`
+(`requestRestart`, `lib/restart-wrapper.js`, the Settings "Restart clideck"
+button, the client bootId/restartPending handshake, and `tests/restart-bootid.test.js`).
+If this phase is ever revisited it should be redesigned from scratch (PTY
+rehoming to a survivable sidecar, or an explicit "you'll lose sessions" warning).
+The connection-lozenge work (relocation, done 2026-05-20 in `58d1795`) shipped
+and is unaffected. Workaround for relaunching clideck remains: `taskkill /F /PID
+<clideck-pid>` from an external terminal, then relaunch `clideck` (the
+retry-listen on EADDRINUSE that this work added survives in `server.js` and
+helps a fast manual relaunch).
 **Owner:** Lance Keay
 **Date:** 2026-05-18
 

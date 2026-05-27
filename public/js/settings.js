@@ -603,29 +603,3 @@ document.getElementById('btn-browse-path').addEventListener('click', () => {
     saveConfig();
   });
 });
-
-// ── Restart clideck server ──
-// Sends `server.restart` to the running process, which spawns a detached
-// child with the same argv before tearing itself down. The browser's
-// reconnect loop handles the disconnect window so the user lands back
-// on the same page once the new process binds the port.
-document.getElementById('btn-server-restart').addEventListener('click', async () => {
-  const ok = await confirmClose(
-    'Restart clideck? All active terminals will be closed cleanly; resumable sessions are preserved.',
-    'Restart',
-  );
-  if (!ok) return;
-  const btn = document.getElementById('btn-server-restart');
-  const status = document.getElementById('server-restart-status');
-  btn.disabled = true;
-  btn.textContent = 'Restarting…';
-  if (status) status.textContent = 'sending restart request';
-  console.log('[restart] click → dispatching clideck:restart-requested + sending server.restart');
-  // Notify app.js that a restart is intended so it can swap the toast and
-  // reset this button once a new bootId arrives. We don't rely on the
-  // server's `server.restarting` broadcast for this — that frame races
-  // with process.exit() and can be dropped before reaching the wire on
-  // Windows.
-  window.dispatchEvent(new Event('clideck:restart-requested'));
-  send({ type: 'server.restart' });
-});

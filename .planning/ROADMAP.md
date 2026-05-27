@@ -13,7 +13,7 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Parked
 
-- **Phase 4** — [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Paused 2026-05-19. Wrapper-process restart shipped on `fix/restart-button` (v1.31.5 → v1.31.6); lozenge relocation shipped 2026-05-20 on `feat/lozenge-relocation` at v1.31.8 (lozenge moved from lower-left corner to the sidebar under the clideck title, right above the search bar). Remaining deliverables (lozenge tooltip + restart-hang fix) deferred until the hang chase is safe to pick up. Workaround for the restart hang: `taskkill /F /PID <clideck-pid>` from an external terminal, then relaunch `clideck`. Full forensic notes in `memory/project_restart-button-broken.md`.
+- **Phase 4** — [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Paused 2026-05-19. The wrapper-process in-UI restart never worked reliably (modal hung, active PTY sessions lost), so on **2026-05-27 the broken in-UI server-restart was removed from `main` entirely** (v1.31.9): `requestRestart`, `lib/restart-wrapper.js`, the Settings "Restart clideck" button, the client bootId/restartPending handshake, and `tests/restart-bootid.test.js` are gone. The connection-lozenge relocation (shipped 2026-05-20 on `feat/lozenge-relocation`, v1.31.8) is unaffected. If this phase is revisited it should be redesigned from scratch. Relaunch workaround unchanged: `taskkill /F /PID <clideck-pid>` from an external terminal, then relaunch `clideck` (the EADDRINUSE retry-listen this work added survives and helps a fast manual relaunch). Full forensic notes in `memory/project_restart-button-broken.md`.
 
 ## Queued phases
 

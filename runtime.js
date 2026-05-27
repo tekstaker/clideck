@@ -27,9 +27,8 @@ function localUrl(host = HOST, port = PORT) {
 }
 
 // Fresh per-process identifier. Surfaced to clients in the `config`
-// broadcast so a reconnecting browser can tell a different process
-// answered (used by the in-UI restart flow to confirm the replacement
-// is up rather than guessing from the socket reopen alone).
+// broadcast and logged at boot — a stable handle for "which clideck
+// process am I talking to", useful when diagnosing reconnects.
 const BOOT_ID = require('crypto').randomUUID();
 
 module.exports = { PORT, HOST, localUrl, BOOT_ID };
