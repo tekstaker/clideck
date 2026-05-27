@@ -4,6 +4,9 @@ title: Default the new-session project dropdown to "None" instead of requiring a
 area: ui
 files:
   - public/js/creator.js
+promoted: true
+promoted_to: .planning/2026-05-27-creator-ergonomics/SPEC.md
+promoted_at: 2026-05-27
 ---
 
 ## Problem

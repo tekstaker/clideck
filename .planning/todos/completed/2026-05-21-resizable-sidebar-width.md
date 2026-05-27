@@ -6,6 +6,9 @@ files:
   - public/index.html
   - public/js/app.js
   - public/tailwind.css
+promoted: true
+promoted_to: .planning/2026-05-27-terminal-display-sizing/SPEC.md
+promoted_at: 2026-05-27
 ---
 
 ## Problem

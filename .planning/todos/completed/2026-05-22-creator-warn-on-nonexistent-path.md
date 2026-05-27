@@ -8,6 +8,9 @@ files:
   - utils.js
   - sessions.js
   - server.js
+promoted: true
+promoted_to: .planning/2026-05-27-creator-ergonomics/SPEC.md
+promoted_at: 2026-05-27
 ---
 
 ## Problem

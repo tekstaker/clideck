@@ -6,6 +6,9 @@ files:
   - public/js/terminals.js
   - public/js/settings.js
   - public/index.html
+promoted: true
+promoted_to: .planning/2026-05-27-terminal-display-sizing/SPEC.md
+promoted_at: 2026-05-27
 ---
 
 ## Problem

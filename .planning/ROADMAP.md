@@ -12,7 +12,8 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Queued phases
 
-- _(none — paste-blobs is now active, see above)_
+- [2026-05-27-terminal-display-sizing](2026-05-27-terminal-display-sizing/SPEC.md) — User-adjustable terminal sizing as a "Display" settings group: xterm.js font-size control (persisted via `config.js`, optional `Ctrl/Cmd +/-`) and a drag-resizable left sidebar that reflows the terminal pane (width in localStorage, min ~220px, double-click to reset). Both share the post-change machinery — iterate `state.terms`, `fitAddon.fit()`, broadcast PTY `resize`. Seeded 2026-05-27 from two pending todos; not yet through discuss/plan-phase.
+- [2026-05-27-creator-ergonomics](2026-05-27-creator-ergonomics/SPEC.md) — Two friction-removers on the new-session creator card: warn (with a create-and-open option) before opening a session in a non-existent path instead of silently landing in `~`, and default the project dropdown to "None (outside project hierarchy)" so the common case needs no pick. New `check-cwd` / `mkdir-cwd` WS messages on the server side; client reuses the `confirm.js` modal pattern. Seeded 2026-05-27 from two pending todos; not yet through discuss/plan-phase.
 
 ## Completed phases
 
