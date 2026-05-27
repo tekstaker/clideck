@@ -6,6 +6,9 @@ files:
   - public/js/terminals.js
   - public/js/app.js
   - public/js/paste.js
+promoted: true
+promoted_to: .planning/2026-05-27-terminal-focus/SPEC.md
+promoted_at: 2026-05-27
 ---
 
 ## Problem
