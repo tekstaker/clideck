@@ -449,11 +449,46 @@ function closeThemePicker() {
 
 // --- Terminal size estimation (for PTY spawn) ---
 
+// Width of the OS scrollbar gutter, measured once. The real FitAddon fit
+// subtracts this from the available width; the old estimate didn't, which is
+// why it over-counted columns by 1-2.
+let _sbWidth = null;
+function scrollbarWidth() {
+  if (_sbWidth != null) return _sbWidth;
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:absolute;visibility:hidden;overflow-y:scroll;width:50px;height:50px;';
+    document.body.appendChild(probe);
+    _sbWidth = probe.offsetWidth - probe.clientWidth;
+    probe.remove();
+  } catch { _sbWidth = 0; }
+  return _sbWidth;
+}
+
 export function estimateSize() {
+  // The PTY spawns at this size BEFORE the real terminal mounts and fits, so
+  // it's the width an agent's TUI first paints against. Every terminal shares
+  // the single #terminals area, so if one is already live the new one will fit
+  // to exactly its cols/rows — return that and skip the lossy guess entirely.
+  // (An over-wide guess made Claude Code's input box paint one column too wide
+  // and left the cursor offset; the later resize fixed the PTY, not the agent.)
+  let active = null, anyFitted = null;
+  for (const t of state.terms.values()) {
+    if (!t?.term || !(t.term.cols > 0) || !(t.term.rows > 0)) continue;
+    const size = { cols: t.term.cols, rows: t.term.rows };
+    if (t.el?.classList?.contains('active')) active = size;
+    anyFitted = anyFitted || size;
+  }
+  if (active || anyFitted) return active || anyFitted;
+
+  // Cold start: nothing to measure. Replicate the real fit as closely as we
+  // can — subtract the inset (4px each side) AND the scrollbar gutter the fit
+  // removes, so we under- rather than over-estimate (under is harmless; the
+  // first resize widens it, over leaves the agent painted too wide).
   const el = document.getElementById('terminals');
-  // Account for inset-1 padding (4px each side)
-  const w = el.clientWidth - 8, h = el.clientHeight - 8;
-  // Menlo 13px: ~7.8px wide, ~17px tall
+  const w = (el ? el.clientWidth : 0) - 8 - scrollbarWidth();
+  const h = (el ? el.clientHeight : 0) - 8;
+  // Menlo 13px: ~7.8px wide, ~17px tall.
   return { cols: Math.max(Math.floor(w / 7.8), 80), rows: Math.max(Math.floor(h / 17), 24) };
 }
 
