@@ -22,10 +22,38 @@ left"), which itself points at a **column-width / cell-grid measurement** proble
 rather than a fixed ±1 constant — the visible cursor cell and xterm's internal
 column model have drifted out of agreement.
 
-## Solution
+## Solution (SHIPPED 2026-05-28, v1.31.10)
 
-TBD — needs diagnosis first. This is the classic xterm.js "columns drift" family
-of bug. Leading suspects, roughly in order:
+**Root cause: PTY spawned 1–2 columns too wide.** Live measurement on a
+throwaway :4099 instance (Playwright + DOM Range geometry) proved the xterm
+DOM renderer is pixel-perfect — the cursor tracks the text to the pixel across
+single lines, wrapped lines, mid-line editing, after resize, and at DPR 1.0 and
+1.5; and `mode con` confirmed ConPTY cols always equalled xterm cols in steady
+state. So it was never a rendering offset.
+
+The defect was `estimateSize()` (public/js/terminals.js): the PTY spawns at this
+size *before* the real terminal mounts and fits, and the old heuristic
+`floor((#terminals.clientWidth − 8) / 7.8)` **ignored xterm's ~scrollbar gutter**,
+over-counting columns by 1–2 at every realistic window width (e.g. 1835px → spawn
+182 vs fitted 180; measured the same +2 at 1280/1366/1440/1600px). cmd.exe
+self-heals via the corrective resize, but a raw-mode editor — **Claude Code's
+input box** (Lance confirmed) — paints once at the inflated width and stays one
+column off; the resize fixes the PTY, not the agent's stale layout.
+
+**Fix:** `estimateSize()` now returns a *live* terminal's exact `cols`/`rows`
+(every terminal shares the single `#terminals` area, so a new one fits to the
+same size — zero guessing). Cold start (no terminal to measure) falls back to the
+heuristic with the scrollbar gutter subtracted, so it under- rather than
+over-estimates (under is harmless; the first resize widens it). Verified: spawn
+cols == fitted cols (180==180) on cold-start, live-path, and at DPR 1.5; tests in
+`tests/terminal-size-estimate.test.js` (88/88 suite green).
+
+---
+
+### Original diagnosis notes (pre-fix)
+
+This is the classic xterm.js "columns drift" family of bug. Leading suspects,
+roughly in order:
 
 1. **Font-metrics mismatch (most likely).** Terminal is created with
    `fontFamily: 'Menlo, Monaco, "Courier New", monospace'` at
