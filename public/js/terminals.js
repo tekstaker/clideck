@@ -14,6 +14,67 @@ function isLightBg(themeId) {
 
 // --- Helpers ---
 
+// Re-focus the active terminal after a paste/dismiss/teardown completes.
+//
+// Phase 11 fixes a class of regressions where a Ctrl+V, drag-and-drop, or
+// toast/modal dismiss left focus on `<body>` (or a button that was about to
+// be removed), so Enter became a no-op until the user clicked the narrow
+// prompt row. Every paste path and every dismiss handler now routes through
+// this helper so the active xterm's hidden helper-textarea regains focus
+// before the next keystroke.
+//
+// R2 mitigation: the call is deferred to the next animation frame so any
+// sibling synchronous + microtask handlers (toast teardown's 300ms remove,
+// the lozenge animation, modal hide transitions, drag-end browser-side
+// focus shuffling) have all run by the time we focus the term. Ordering
+// matters — if we focused synchronously, a later handler that re-focuses a
+// dismiss button (then removes it) would undo our work and re-drop focus
+// to body.
+//
+// Guards (re-evaluated on the rAF tick so DOM mutations between scheduling
+// and firing are caught):
+//
+//   - Visible confirm-modal overlay (`.confirm-overlay:not(.hidden)`) or
+//     creator card (`.creator-card`) → skip (user is in a dialog).
+//   - `document.activeElement` is an input/textarea/select/contenteditable/
+//     role=combobox → skip (user is typing into a real form control like
+//     the sidebar search box or a contenteditable rename).
+//   - EXCEPTION to the above: xterm's hidden `.xterm-helper-textarea` IS
+//     a `<textarea>`, but it's a descendant of `.term-wrap.active`. That
+//     particular textarea IS the focus we want, so a TEXTAREA inside a
+//     `.term-wrap.active` ancestor is NOT a "real input" — fall through
+//     to focus. Same Phase 9 lesson learned from the Ctrl/Cmd +/-/0
+//     keydown handler.
+//   - Entry may have been removed between scheduling and the rAF tick —
+//     re-lookup before calling `term.focus()`.
+//
+// Always exported — callers in other modules (toast.js, confirm.js) import
+// this rather than reimplementing the guard.
+export function refocusActiveTerm(idOverride) {
+  const id = idOverride ?? state.active;
+  if (!id) return;
+  if (!state.terms.has(id)) return;
+  requestAnimationFrame(() => {
+    if (document.querySelector('.confirm-overlay:not(.hidden), .creator-card')) return;
+    const ae = document.activeElement;
+    if (ae && typeof ae.matches === 'function'
+        && ae.matches('input, textarea, select, [contenteditable="true"], [role="combobox"]')) {
+      // xterm's hidden helper-textarea exception (Phase 9 lesson).
+      if (!ae.closest?.('.term-wrap.active')) return;
+    }
+    const entry = state.terms.get(id);
+    if (entry) entry.term.focus();
+  });
+}
+
+// Expose the helper on `window` so dismiss handlers in non-importing
+// modules (toast.js, confirm.js) can reach it without forcing a
+// circular import (terminals.js already imports both). Mirrors the
+// `window.__refreshStatusBadge` pattern in app.js.
+if (typeof window !== 'undefined') {
+  window.__refocusActiveTerm = refocusActiveTerm;
+}
+
 const RECENT_MS = 15 * 60 * 1000; // 15 minutes
 
 function isRecent(ts) { return Date.now() - ts < RECENT_MS; }
@@ -214,7 +275,13 @@ async function pasteIntoTerminal(sessionId) {
         if (binaryType) {
           const blob = await item.getType(binaryType);
           await uploadBlobToSession(sessionId, blob, binaryType);
-          return; // binary intent wins; do NOT also send text to PTY
+          // AC 1 — restore focus after the binary-blob paste so the
+          // user's next Enter reaches the PTY without an intervening
+          // click. rAF-deferred to win over any teardown that fires
+          // after our resolve. binary intent wins; do NOT also send
+          // text to PTY.
+          refocusActiveTerm(sessionId);
+          return;
         }
       }
     }
@@ -230,6 +297,11 @@ async function pasteIntoTerminal(sessionId) {
   } catch {
     showToast('Clipboard read failed.', { type: 'error' });
   }
+  // AC 1 — restore focus after the text paste lands. Same rationale as
+  // above: Ctrl+V hits the document keydown listener which fires AFTER
+  // xterm's custom handler, so focus has typically drifted to <body>
+  // by the time send() returns.
+  refocusActiveTerm(sessionId);
 }
 
 async function uploadBlobToSession(sessionId, blob, mime, filename) {
@@ -492,6 +564,59 @@ export function estimateSize() {
   return { cols: Math.max(Math.floor(w / 7.8), 80), rows: Math.max(Math.floor(h / 17), 24) };
 }
 
+// --- Font-size clamp helper (Phase 9 — terminal display sizing) ---
+//
+// D-02 (CONTEXT.md): xterm font-size range 8..32px, step 1px, default 13px.
+// This is a pure helper so it lives next to estimateSize. Anything that
+// touches the font-size (the Settings stepper, the keyboard shortcut
+// handler, the Terminal constructor) routes through here so the clamp +
+// fallback behaviour is identical in every call site.
+//
+// Bad input (NaN / null / undefined / non-numeric / Infinity) → default.
+// This is the cold-start guard: `state.cfg.terminalFontSize` may not have
+// arrived yet when the first terminal mounts, and clampFontSize(undefined)
+// returning 13 keeps the constructor happy without explicit `??` everywhere.
+
+export const FONT_SIZE_MIN = 8;
+export const FONT_SIZE_MAX = 32;
+export const FONT_SIZE_DEFAULT = 13;
+
+export function clampFontSize(n) {
+  const num = typeof n === 'string' ? Number(n) : n;
+  if (typeof num !== 'number' || !Number.isFinite(num)) return FONT_SIZE_DEFAULT;
+  const i = Math.floor(num);
+  if (i < FONT_SIZE_MIN) return FONT_SIZE_MIN;
+  if (i > FONT_SIZE_MAX) return FONT_SIZE_MAX;
+  return i;
+}
+
+// Apply a new font-size to every open terminal AND broadcast the resulting
+// resize to each PTY so the shell recomputes cols/rows. D-03: live apply
+// to all open terminals globally (not per-session). The proposeDimensions
+// guard mirrors doFit() so a font-size change that doesn't actually shift
+// cols/rows (e.g. a tiny tweak inside the same character cell) skips the
+// spurious PTY resize. Callers (Settings stepper, Ctrl+/- handler) pass
+// any value; clampFontSize normalises it.
+export function applyFontSize(px) {
+  const size = clampFontSize(px);
+  for (const [id, entry] of state.terms) {
+    try {
+      entry.term.options.fontSize = size;
+      const dims = entry.fit.proposeDimensions();
+      if (!dims) continue;
+      const changed = dims.cols !== entry.term.cols || dims.rows !== entry.term.rows;
+      entry.fit.fit();
+      if (changed) {
+        send({ type: 'resize', id, cols: entry.term.cols, rows: entry.term.rows });
+      }
+    } catch {
+      // A single terminal in a bad state must not stop the loop — every
+      // other open terminal still needs the new size applied.
+    }
+  }
+  return size;
+}
+
 // --- Terminal management ---
 
 export function addTerminal(id, name, themeId, commandId, projectId, muted, lastPreview, presetId, cwd) {
@@ -535,7 +660,11 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
   document.getElementById('terminals').appendChild(el);
 
   const term = new Terminal({
-    fontSize: 13,
+    // Phase 9 (D-03): every new terminal reads the live config value so
+    // it joins existing terminals at the user's chosen size. clampFontSize
+    // returns the default 13 when state.cfg hasn't yet arrived (cold
+    // start path), so no explicit guard is needed here.
+    fontSize: clampFontSize(state.cfg?.terminalFontSize),
     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
     theme: resolveTheme(themeId),
     // Keep ANSI/truecolor output readable across dark and light terminal themes.
@@ -662,8 +791,39 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     if (await copyTerminalSelection(id)) {
       showToast('Copied', { id: 'terminal-copy', type: 'success', duration: 1200 });
     }
+    // Defence-in-depth: a pointer-release that copied a selection
+    // landed inside .xterm-screen, so focus is usually already on the
+    // helper-textarea. But showToast mutates DOM and a subsequent
+    // animation tick could shift activeElement — re-anchor focus.
+    refocusActiveTerm(id);
   };
   el.addEventListener('pointerup', onPointerUp);
+
+  // AC 4 — wider click target. A click anywhere over the .term-wrap
+  // (the padded container around the xterm canvas) refocuses the
+  // terminal. Previously the clickable hitbox was only the rendered
+  // prompt row; mis-clicks landed on bare .term-wrap padding, focus
+  // stayed wherever it was, and Enter went nowhere.
+  //
+  // Guards:
+  //   - Skip when the click target is an interactive child
+  //     (button, anchor, contenteditable, input, textarea, the
+  //     drop-overlay card while a drag is being staged) — those
+  //     widgets have their own focus semantics we mustn't trample.
+  //   - Skip when xterm reports an active selection — the pointerup-
+  //     copy path above is mutually exclusive with a plain click,
+  //     but guarding here keeps the two handlers strictly separated
+  //     (selection release → copy + refocus; plain click → refocus
+  //     only).
+  //
+  // term.focus() is idempotent; clicking inside .xterm-screen when
+  // the term already holds focus is a no-op.
+  const onClickRefocus = (e) => {
+    if (e.target.closest?.('button, a, [contenteditable="true"], input, textarea, .drop-overlay-card')) return;
+    if (term.hasSelection()) return;
+    term.focus();
+  };
+  el.addEventListener('click', onClickRefocus);
 
   // Drag-and-drop file upload. Files copied from File Explorer don't
   // put their bytes on the clipboard (only their path), so paste from
@@ -695,6 +855,10 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     for (const file of files) {
       await uploadBlobToSession(id, file, file.type || 'application/octet-stream', file.name);
     }
+    // AC 2 — restore focus after drag-and-drop teardown. The browser's
+    // drag-drop pipeline ends with focus on <body>; without this the
+    // user's next Enter is swallowed until they click the prompt row.
+    refocusActiveTerm(id);
   };
   el.addEventListener('dragover', onDragOver);
   el.addEventListener('dragleave', onDragLeave);
@@ -743,7 +907,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     }
   }, 500);
   const cancelFitRaf = () => { if (fitRaf) { cancelAnimationFrame(fitRaf); fitRaf = 0; } };
-  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, onDragOver, onDragLeave, onDrop, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '', hasToken: false });
+  state.terms.set(id, { term, fit, el, ro, cancelFitRaf, onContextMenu, onPointerUp, onClickRefocus, onDragOver, onDragLeave, onDrop, linkProvider, themeId, commandId, presetId: presetId || null, projectId: projectId || null, muted: !!muted, cwd: cwd || '', working: false, workStartedAt: null, stopBounce, queue: (data) => { if (!fitted) { pending.push(data); return true; } return false; }, lastActivityAt: Date.now(), unread: false, lastPreviewText: lastPreview || '', searchText: '', hasToken: false });
   document.getElementById('empty').style.display = 'none';
   document.getElementById('terminals').style.pointerEvents = '';
   if (muted) requestAnimationFrame(() => updateMuteIndicator(id));
@@ -759,6 +923,7 @@ export function removeTerminal(id) {
   entry.ro?.disconnect();
   entry.el.removeEventListener?.('contextmenu', entry.onContextMenu);
   if (entry.onPointerUp) entry.el.removeEventListener?.('pointerup', entry.onPointerUp);
+  if (entry.onClickRefocus) entry.el.removeEventListener?.('click', entry.onClickRefocus);
   if (entry.onDragOver) entry.el.removeEventListener?.('dragover', entry.onDragOver);
   if (entry.onDragLeave) entry.el.removeEventListener?.('dragleave', entry.onDragLeave);
   if (entry.onDrop) entry.el.removeEventListener?.('drop', entry.onDrop);
@@ -804,7 +969,11 @@ export function select(id) {
       if (state.filter.tab === 'unread') setTab('all');
     }
     entry.term.scrollToBottom();
-    if (!document.querySelector('[contenteditable="true"]')) entry.term.focus();
+    // Was: `if (!document.querySelector('[contenteditable="true"]')) entry.term.focus();`.
+    // The new refocusActiveTerm() extends the same guard to inputs/
+    // textareas/selects/combobox + visible modals/overlays. state.active
+    // hasn't been updated yet at this point, so pass the explicit id.
+    refocusActiveTerm(id);
   }
   state.active = id;
 }

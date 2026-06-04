@@ -1,7 +1,7 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, setHasToken, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog } from './terminals.js';
-import { renderSettings, updateVersionFooter } from './settings.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, setHasToken, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog, applyFontSize, clampFontSize, FONT_SIZE_DEFAULT, FONT_SIZE_MIN, FONT_SIZE_MAX } from './terminals.js';
+import { renderSettings, updateVersionFooter, setFontSize } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
 import { confirmClose } from './confirm.js';
@@ -11,6 +11,7 @@ import { showToast } from './toast.js';
 import { sessionsInCwd } from './session-collisions.js';
 import './nav.js';
 import { initDrag, wasDragging } from './drag.js';
+import { init as initSidebarResize, applySidebarWidth } from './sidebar-resize.js';
 import { registerHotkey, unregisterHotkey, unregisterAllForPlugin } from './hotkeys.js';
 import { renderPrompts } from './prompts.js';
 
@@ -130,6 +131,16 @@ function connect() {
         renderPrompts();
         refreshCreator();
         for (const [, entry] of state.terms) applyTheme(entry.term, entry.themeId);
+        // Phase 9 (D-03): a config broadcast can carry a new terminalFontSize
+        // (e.g. another connected client used the stepper). Push it to every
+        // open xterm so the size stays consistent across clients/tabs.
+        applyFontSize(state.cfg.terminalFontSize);
+        // Phase 9 (D-06): config is the source of truth for sidebarWidth.
+        // The paint-hint in sidebar-resize.js applies localStorage
+        // synchronously at module load; this call replaces that with the
+        // authoritative value from the server and re-mirrors to localStorage
+        // (healing any out-of-band drift between cache and config.json).
+        applySidebarWidth(state.cfg.sidebarWidth);
         break;
       }
       case 'themes':
@@ -1867,6 +1878,77 @@ function doRemoteDisconnect() {
 document.getElementById('remote-disconnect').addEventListener('click', doRemoteDisconnect);
 document.getElementById('remote-disconnect2').addEventListener('click', doRemoteDisconnect);
 
+// ── Font-size keyboard shortcuts (Phase 9 — terminal display sizing) ──
+//
+// D-01: Ctrl/Cmd + = / + / - / 0 adjust the terminal font-size when a
+// terminal is focused. D-04 (named risk): MUST NOT hijack browser zoom
+// in any other context — Settings inputs, sidebar search, agent name
+// fields, prompt editors, contenteditable cells, etc.
+//
+// Guard order is load-bearing:
+//   1. Cheap key-match first (skip 99.9% of keystrokes immediately).
+//   2. Reject if any "other" modifier is held (Alt with anything but
+//      the bare +/-/0 keys; Shift on a non-`+` key — `+` ITSELF is
+//      shift+`=` on US layouts so we accept it on the `+` path).
+//   3. Compute isTerminalFocused:
+//        - activeElement must NOT be input/textarea/select/contenteditable;
+//        - the Settings overlay must be hidden (the overlay can capture
+//          focus globally — even when activeElement is something benign
+//          like a card div, we don't want Ctrl+= to steal browser zoom
+//          while Settings is on screen);
+//        - activeElement must have an ancestor `.term-wrap.active` —
+//          the xterm helper element that gains `.active` in terminals.js
+//          select() when a terminal becomes the focused one.
+//   4. ONLY THEN preventDefault. Reaching this line means the user is
+//      genuinely inside a terminal and the keystroke would otherwise
+//      browser-zoom the page; D-04 says we own it.
+//
+// Listener is on document, bubble phase. Capture phase would intercept
+// before any input got a chance to ignore the modifier — that's wrong;
+// we want the input to keep its native browser-zoom behaviour.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const key = e.key;
+  const isPlus = key === '=' || key === '+';
+  const isMinus = key === '-';
+  const isZero = key === '0';
+  if (!isPlus && !isMinus && !isZero) return;
+  // Alt + ctrl + key — different OS-level binding, don't steal it.
+  if (e.altKey) return;
+
+  // Settings overlay open? Hand the keystroke back to the browser
+  // (zoom). The user is in a settings context, not a terminal one.
+  const overlay = document.getElementById('settings-overlay');
+  if (overlay && !overlay.classList.contains('hidden')) return;
+
+  const active = document.activeElement;
+  if (!active) return;
+
+  // Terminal-focus check FIRST. xterm.js routes all keystrokes through
+  // an invisible textarea (.xterm-helper-textarea) which IS a child of
+  // the active .term-wrap. We must accept this textarea (it IS the
+  // focused terminal), so the term-wrap.active ancestor check runs
+  // before the generic textarea reject below.
+  const inActiveTerm = !!active.closest('.term-wrap.active');
+
+  if (!inActiveTerm) {
+    // Not in a terminal. Now apply the "this looks like a real text
+    // input — let the browser zoom" guard. (Inside an active terminal
+    // we accept TEXTAREA because xterm uses one as its key proxy.)
+    const tag = active.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (active.isContentEditable) return;
+    // Nothing focused & not in a terminal — let browser handle (zoom).
+    return;
+  }
+
+  e.preventDefault();
+  if (isZero) setFontSize(FONT_SIZE_DEFAULT);
+  else if (isPlus) setFontSize((state.cfg.terminalFontSize ?? FONT_SIZE_DEFAULT) + 1);
+  else if (isMinus) setFontSize((state.cfg.terminalFontSize ?? FONT_SIZE_DEFAULT) - 1);
+});
+
 initDrag();
+initSidebarResize();
 initSessionScrollbarVisibility();
 connect();
