@@ -11,10 +11,6 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 - _(none — pick a Queued phase to start, or open a new milestone.)_
 
-## Parked
-
-- **Phase 4** — [2026-05-18-restart-architecture](2026-05-18-restart-architecture/SPEC.md) — Paused 2026-05-19. The wrapper-process in-UI restart never worked reliably (modal hung, active PTY sessions lost), so on **2026-05-27 the broken in-UI server-restart was removed from `main` entirely** (v1.31.9): `requestRestart`, `lib/restart-wrapper.js`, the Settings "Restart clideck" button, the client bootId/restartPending handshake, and `tests/restart-bootid.test.js` are gone. The connection-lozenge relocation (shipped 2026-05-20 on `feat/lozenge-relocation`, v1.31.8) is unaffected. If this phase is revisited it should be redesigned from scratch. Relaunch workaround unchanged: `taskkill /F /PID <clideck-pid>` from an external terminal, then relaunch `clideck` (the EADDRINUSE retry-listen this work added survives and helps a fast manual relaunch). Full forensic notes in `memory/project_restart-button-broken.md`.
-
 ## Queued phases
 
 - **Phase 12** — [2026-06-04-clipboard-image-paste](2026-06-04-clipboard-image-paste/SPEC.md) — Close the last gap in the Phase 8 binary-paste pipeline: clipboard image bytes (SnagIt, Windows Snipping Tool, Chromium "Copy image") get uploaded to `.clideck/paste/` (server synthesises the filename — no client minting) and the path is typed into the active PTY, matching the drag-drop path. Includes a UX toast for genuinely unreadable clipboard payloads. **Diagnosis:** H2 (missing-filename) falsified by code inspection — server already handles a null hint; real failure modes are H1 (no `image/*` MIME) + H5 (`clipboard.read()` rejection swallowed). **Strategy = one-pass defensive patch** (D-01): six client-only patches in `terminals.js` + a default-OFF `window.__debugClipboard` gate; server NOT modified. **Plans:** 1 plan, 1 wave.
