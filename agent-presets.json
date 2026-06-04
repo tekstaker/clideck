@@ -111,6 +111,7 @@
     "command": "/bin/zsh",
     "isAgent": false,
     "canResume": false,
+    "canReplay": true,
     "resumeCommand": null,
     "sessionIdPattern": null,
     "outputMarker": null
