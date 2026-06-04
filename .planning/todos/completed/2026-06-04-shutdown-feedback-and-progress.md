@@ -6,6 +6,9 @@ files:
   - server.js
   - sessions.js
   - bin/clideck.js
+promoted: true
+promoted_to: .planning/2026-06-04-shutdown-feedback/SPEC.md
+promoted_at: 2026-06-04
 ---
 
 ## Problem

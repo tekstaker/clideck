@@ -17,7 +17,8 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Queued phases
 
-_(none — Phases 9, 10, 11 all shipped 2026-06-03 via `/gsd-autonomous`.)_
+- **Phase 12** — [2026-06-04-clipboard-image-paste](2026-06-04-clipboard-image-paste/SPEC.md) — Close the last gap in the Phase 8 binary-paste pipeline: clipboard image bytes (SnagIt, Windows Snipping Tool, Chromium "Copy image") get uploaded to `.clideck/paste/` with a synthesised filename and the path is typed into the active PTY, matching the drag-drop path. Includes a UX toast for genuinely unreadable clipboard payloads. Status: planned, not yet through `/gsd-discuss-phase` / `/gsd-plan-phase`.
+- **Phase 13** — [2026-06-04-shutdown-feedback](2026-06-04-shutdown-feedback/SPEC.md) — Replace the silent Ctrl+C → terminal-window-close workaround with a visible shutdown: immediate ack banner, per-step labels with timing, 3 s heartbeat, 10 s hard-timeout watchdog. Preserves the isolated-try/catch shape from the 2026-05-18 stranded-PID-12980 incident. Lifecycle work — iterate from an external terminal per the meta-work memory. Status: planned, not yet through `/gsd-discuss-phase` / `/gsd-plan-phase`.
 
 ## Completed phases
 
