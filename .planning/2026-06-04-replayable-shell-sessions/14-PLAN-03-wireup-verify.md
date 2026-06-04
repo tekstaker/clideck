@@ -104,7 +104,8 @@ memory/feedback_phase-work-on-feat-branches.md  → ship on feat branch; gh is l
     Run the full Vitest unit suite and confirm zero failures (AC 6) and that the existing resumable-handlers tests are unchanged-and-green (AC 3 — no agent-session regression). Then run the Playwright e2e suite and confirm it passes unchanged (AC 7 — no UI behaviour change expected). If Playwright requires a running server, follow the project's standard e2e harness; if the harness needs an isolated port/data dir, reuse the throwaway pattern. Capture pass/fail counts in the SUMMARY. If any suite fails, STOP and report — do not proceed to the smoke checkpoint with a red suite.
   </action>
   <verify>
-    <automated>npx vitest run 2>&1 | grep -v '^#' | grep -qiE 'Test Files.*passed|[0-9]+ passed' </automated>
+    <automated>npx vitest run</automated>
+    <note>vitest exit code is authoritative — exit 0 = full suite green, nonzero = at least one failure. Do NOT pipe through grep (a partial-pass summary line contains "passed" and would mask a red suite). Then run the Playwright e2e suite separately and confirm exit 0.</note>
   </verify>
   <acceptance_criteria>
     - `npx vitest run` exits 0 with the full suite green (baseline + 7 new replayable tests)

@@ -109,7 +109,8 @@ CRITICAL DIVERGENCE from candidate: candidate's saveSessions uses `if (cmd.canRe
     Append a `// --- Phase 14: replayable persistence track ---` block to tests/resumable-handlers.test.js. Define SHELL_CFG (shell cmd canResume:false canReplay:true + a claude cmd canResume:true) and REPLAYABLE_ENTRY fixtures adapted from the candidate. Add the 7 tests above. Use existing freshSessionsModule/TEST_DATA_DIR/SAMPLE_ENTRY — do not redefine the harness. For Test 7 use vi.spyOn(console,'warn') and restore in finally. Do NOT touch any existing describe block (AC 3). Run the suite and confirm the 7 new tests FAIL (rehydrateReplayable / accessors not yet implemented).
   </action>
   <verify>
-    <automated>npx vitest run tests/resumable-handlers.test.js 2>&1 | grep -v '^#' | grep -qE 'rehydrateReplayable|replayable' </automated>
+    <automated>grep -qE 'rehydrateReplayable|__getReplayableForTest' tests/resumable-handlers.test.js</automated>
+    <note>RED step — tests are expected to FAIL here, so do NOT gate on vitest exit code. This check confirms the new tests were written into the file. Run `npx vitest run tests/resumable-handlers.test.js` separately and confirm the 7 new tests appear as FAILING.</note>
   </verify>
   <acceptance_criteria>
     - tests/resumable-handlers.test.js contains ≥7 new tests referencing rehydrateReplayable / __getReplayableForTest
@@ -134,7 +135,8 @@ CRITICAL DIVERGENCE from candidate: candidate's saveSessions uses `if (cmd.canRe
     Do NOT touch resume() (AC 3).
   </action>
   <verify>
-    <automated>npx vitest run tests/resumable-handlers.test.js -t "saveSessions persists replayable" 2>&1 | grep -v '^#' | grep -qiE 'pass|✓'</automated>
+    <automated>npx vitest run tests/resumable-handlers.test.js -t "saveSessions persists replayable"</automated>
+    <note>vitest exit code is authoritative — exit 0 means the matched test(s) passed, nonzero means a failure. Do NOT pipe through grep (a "1 passed, 3 failed" summary line contains "pass" and would mask a red suite).</note>
   </verify>
   <acceptance_criteria>
     - sessions.js contains a canReplay partition: an explicit `else if (cmd.canReplay)` (or equivalent named branch) in saveSessions, NOT an else-fallthrough on !canResume
@@ -159,7 +161,8 @@ CRITICAL DIVERGENCE from candidate: candidate's saveSessions uses `if (cmd.canRe
     Add `const MAX_REPLAY_REHYDRATE = 50;` (named constant per D-03) near the top of sessions.js. Implement `rehydrateReplayable(cfg)`: guard on cfg.commands array; resolve home from process.env.HOME || process.env.USERPROFILE. If replayable.length > MAX_REPLAY_REHYDRATE, emit a single console.warn naming the dropped count (replayable.length - 50) and process only `replayable.slice(0, MAX_REPLAY_REHYDRATE)`. For each entry: find cmd by entry.commandId; if absent, console.warn skip and continue (do not spawn). Validate `entry.cwd && !existsSync(entry.cwd)` → console.warn fallback, set cwd=home (T-14-cwd mitigation, AC 5). Call createProgrammatic({commandId, cwd, themeId, projectId, name}, cfg); on result.error, warn and continue; else increment spawned. After the loop, log spawned/total and DRAIN `replayable = []` (load-bearing per &lt;specifics&gt; — next saveSessions re-derives from the live Map). Return spawned. Export rehydrateReplayable.
   </action>
   <verify>
-    <automated>npx vitest run tests/resumable-handlers.test.js 2>&1 | grep -v '^#' | grep -qiE 'Test Files.*pass|[0-9]+ passed'</automated>
+    <automated>npx vitest run tests/resumable-handlers.test.js</automated>
+    <note>Rely on vitest's exit code (0 = all tests in the file passed). No grep — see Task 2's note.</note>
   </verify>
   <acceptance_criteria>
     - rehydrateReplayable spawns via createProgrammatic, falls back to $HOME on missing cwd with a WARN (AC 5)

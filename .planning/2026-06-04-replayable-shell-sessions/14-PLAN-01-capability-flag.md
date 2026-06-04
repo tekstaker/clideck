@@ -105,7 +105,7 @@ Resumable agent presets (claude-code, codex, gemini-cli, opencode, clideck-agent
     Keep canReplay a capability verb; do NOT introduce any on-disk state noun here (the `replayable` row marker is Plan 02's concern).
   </action>
   <verify>
-    <automated>npx vitest run tests/resumable-handlers.test.js 2>&1 | grep -v '^#' | grep -qE 'pass|✓|Test Files' && node -e "const {load}=require('./config.js'); console.log('config loads')"</automated>
+    <automated>npx vitest run tests/resumable-handlers.test.js && node -e "require('./config.js'); console.log('config loads')"</automated>
   </verify>
   <acceptance_criteria>
     - config.js defaults canReplay from preset at the same site canResume is defaulted (cmd.canReplay === undefined branch present)
