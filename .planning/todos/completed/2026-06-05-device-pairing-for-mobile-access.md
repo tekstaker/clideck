@@ -2,6 +2,9 @@
 created: 2026-06-05T11:07:07.092Z
 title: Device pairing for first-time mobile access — only linked devices can connect
 area: auth
+promoted: true
+promoted_to: 2026-06-05-device-pairing-for-mobile-access
+promoted_at: 2026-06-05T11:25:00Z
 files:
   - server.js
   - handlers.js
@@ -118,3 +121,25 @@ TBD — design space sketched below. Discuss-phase should pin the locked choices
 This is **not** a "small fix" — probably 5-8 plans across 4 waves, similar
 shape to Phase 12 mobile-desktop. Recommend running through `/gsd-spec-phase`
 to pin ambiguity before `/gsd-discuss-phase`.
+
+## Promotion (2026-06-05)
+
+Promoted to **Phase 15 — 2026-06-05-device-pairing-for-mobile-access**.
+SPEC at `.planning/2026-06-05-device-pairing-for-mobile-access/SPEC.md` with
+the design space distilled into 9 acceptance criteria and 6 open decisions
+flagged for `/gsd-discuss-phase`. Status: planned, not yet through discuss
+or plan.
+
+## Relation to shipped + planned work
+
+- **Phase 12 (origin/main, `2026-06-04-clipboard-image-paste`, v1.31.15)** —
+  different "Phase 12" scope; this todo's reference to "Phase 12" predates
+  origin's renumbering. No code overlap.
+- **Phase 14 (`2026-06-04-replayable-shell-sessions`, v1.31.17)** —
+  rehydrates sessions across server restart; doesn't gate connections.
+  Orthogonal but worth noting that a rehydrated session will only attach to
+  a paired device under Phase 15, which is the desired interaction.
+- **Local branch `feat/mobile-desktop-concurrent-access`** — the practical
+  motivator. That branch shipped concurrent mobile + desktop access without
+  app-level auth (its SPEC explicitly deferred it to "a separate phase").
+  Phase 15 IS that separate phase.

@@ -13,7 +13,7 @@ Fork of `rustykuntz/clideck` maintained for Windows + dictation ergonomics.
 
 ## Queued phases
 
-- _(none — all phases shipped. Run `/gsd-new-milestone` to start the next cycle.)_
+- **Phase 15** — [2026-06-05-device-pairing-for-mobile-access](2026-06-05-device-pairing-for-mobile-access/SPEC.md) — First-time pairing flow so only linked devices can drive the app: server-issued opaque per-device tokens, 6-char OTP handshake on `/pair`, WS upgrade rejected with close code 4401 for unknown tokens before reaching `sessions.clients`, Settings → "Linked devices" panel with live-revoke that closes open sockets immediately. Defence-in-depth on top of the existing VPN gate (Phase 12 mobile-desktop SPEC's deferred app-level auth) — guards the "guest tablet on the same VPN" and "swapped phone" cases. Persistence in new `.clideck/devices.json` (token hashes only — raw token returned once at pair-time). Open decisions for `/gsd-discuss-phase`: WS-token transport (subprotocol vs. query), owner-bootstrap mechanism (boot OTP vs. open-window vs. config code), unpaired UX shape, integration with the orphaned `feat/mobile-desktop-concurrent-access` branch's `clients.count` broadcast. Status: planned, not yet through `/gsd-discuss-phase` / `/gsd-plan-phase`.
 
 ## Completed phases
 
