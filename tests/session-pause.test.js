@@ -114,7 +114,7 @@ describe('pause — with captured token', () => {
     }));
   });
 
-  it('persists the resumable record to sessions.json', () => {
+  it('persists the resumable record to sessions.json', async () => {
     const sessions = freshSessionsModule();
     const map = sessions.getSessions();
     map.set('sess-A', fakeLiveSession({ id: 'sess-A' }));
@@ -124,7 +124,7 @@ describe('pause — with captured token', () => {
 
     // saveSessions is called by the caller in production (handlers.js
     // wraps pause + save). The test invokes the side effect directly.
-    sessions.shutdown?.(CFG_WITH_RESUME); // ensure final flush
+    await sessions.shutdown?.(CFG_WITH_RESUME); // ensure final flush (now async)
     // Re-load: confirm the on-disk record contains the paused session.
     const saved = JSON.parse(readFileSync(join(TEST_DATA_DIR, 'sessions.json'), 'utf8'));
     expect(saved).toEqual(expect.arrayContaining([

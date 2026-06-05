@@ -802,12 +802,23 @@ function startAutoSave(getConfig) {
   }, 30000);
 }
 
-function shutdown(cfg) {
+async function shutdown(cfg) {
   clearInterval(autoSaveInterval);
   saveSessions(cfg);
+  // Diagnostic: the per-PTY kill loop is the real worst-case hang on Windows
+  // ConPTY (per Phase 13 finding). Log the count + total loop time so the
+  // "where did shutdown spend its time" question is answerable (PTYs vs
+  // saveSessions) without per-PTY noise. The setImmediate yield after each
+  // kill returns control to the event loop so the caller's heartbeat/watchdog
+  // (server-side onShutdown) can actually fire DURING this loop.
+  const n = sessions.size;
+  const t0 = Date.now();
+  process.stdout.write(`[clideck] killing ${n} PTYs… `);
   for (const [, s] of sessions) {
     try { s.pty.kill(); } catch {}
+    await new Promise(r => setImmediate(r));
   }
+  process.stdout.write(`done (${Date.now() - t0}ms)\n`);
 }
 
 // Rehydrate plain-shell tabs that were persisted via the replayable track.
