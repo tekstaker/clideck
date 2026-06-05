@@ -18,6 +18,15 @@ import { renderPrompts } from './prompts.js';
 const shownAgentHealthToasts = new Set();
 let reconnectReplaySkip = null;
 
+// Phase 16 — hydrate state.deviceId at app boot from localStorage so the
+// Settings panel (16-07) can mark "This device" on the linked-devices row
+// without round-tripping a `device.list.get` first. The raw device token
+// (the credential — stored as 'clideck.deviceToken') stays out of `state`
+// entirely; it's read only in connect() at WS-construction time.
+// Wrapped in try/catch because localStorage access throws on Safari
+// private-mode with cookies-blocked.
+try { state.deviceId = localStorage.getItem('clideck.deviceId'); } catch { /* localStorage blocked — leave deviceId null */ }
+
 // Connection liveness. Browsers leave WebSocket sockets in a half-open state
 // when the underlying TCP connection silently dies (laptop sleep, Wi-Fi roam,
 // NAT timeout, idle proxy). Without an app-level heartbeat the user is stuck:
@@ -29,6 +38,16 @@ const PONG_TIMEOUT_MS = 10000;
 let heartbeatTimer = null;
 let pongTimer = null;
 let lastDropToastId = null;
+// Phase 16 — distinguishes boot-time WS handshake rejection (event.code=1006,
+// because ws.verifyClient rejecting pre-handshake closes the TCP socket
+// without sending a close frame per RFC 6455) from in-flight revoke
+// (event.code=4401, because Pattern A from RESEARCH §4 has sessions.closeDevice
+// send ws.close(4401, 'revoked') AFTER the upgrade completes). Per
+// RESEARCH §7 both paths converge on the same UX (clear localStorage,
+// redirect to /pair) but the discriminator lets the client avoid clearing
+// on a genuine network blip — only when handshake-never-completed AND a
+// token was present do we treat 1006 as an auth-fail signal.
+let connectedAtLeastOnce = false;
 
 // ── Connection lozenge (lower-left of the page) ──
 // Lance asked for an unambiguous "am I connected?" indicator with uptime
@@ -102,10 +121,32 @@ function startHeartbeat() {
 }
 
 function connect() {
+  // Phase 16 — boot-time localStorage gate (D-03 soft client-side check).
+  // If no device token is stored, redirect to /pair for OTP entry. The WS
+  // is never constructed in the unpaired state — this prevents the
+  // 1006-close → /pair redirect loop that would otherwise happen on every
+  // attempt for a fresh browser. The server-side hard reject (16-05
+  // verifyClient) is the second layer of defence; this is the cheap
+  // client-side first layer that avoids the WS round-trip entirely.
+  const deviceToken = localStorage.getItem('clideck.deviceToken');
+  if (!deviceToken) {
+    window.location.href = '/pair';
+    return;
+  }
   const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  state.ws = new WebSocket(`${wsProtocol}//${location.host}`);
+  // Phase 16 D-01 — token transport via the Sec-WebSocket-Protocol header.
+  // The browser sends `Sec-WebSocket-Protocol: clideck-device-token, <token>`
+  // on the upgrade request; the server's handleProtocols (16-05) echoes
+  // back just the sentinel. Both array entries must be RFC 6455 token-chars
+  // (verified for base64url tokens at RESEARCH §1).
+  state.ws = new WebSocket(`${wsProtocol}//${location.host}`, ['clideck-device-token', deviceToken]);
 
   state.ws.onopen = () => {
+    // Phase 16 — flag the handshake as having completed at least once for
+    // this WS instance. Read by onclose to distinguish the boot-time
+    // verifyClient-rejection case (1006 without an open) from a transient
+    // network drop after a healthy connection.
+    connectedAtLeastOnce = true;
     connectedAt = Date.now();
     renderStatusBadge();
     reconnectReplaySkip = new Set(state.terms.keys());
@@ -481,10 +522,46 @@ function connect() {
     }
   };
 
-  state.ws.onclose = () => {
+  state.ws.onclose = (event) => {
     connectedAt = null;
     renderStatusBadge();
     clearHeartbeat();
+
+    // RESEARCH §7 — hybrid auth-fail detection.
+    //
+    //   ws.addEventListener('close', (event) => {
+    //     const hasToken = !!localStorage.getItem('clideck.deviceToken');
+    //     const isAuthFail = event.code === 4401
+    //       || (!connectedAtLeastOnce && event.code === 1006 && hasToken);
+    //     if (isAuthFail) {
+    //       localStorage.removeItem('clideck.deviceToken');
+    //       window.location.href = '/pair';
+    //     }
+    //   });
+    //
+    // 4401 is the unambiguous in-flight revoke path (sessions.closeDevice
+    // sent ws.close(4401, 'revoked') after the upgrade was already up).
+    // 1006-with-token-and-never-connected is the verifyClient rejection
+    // path: the HTTP 401 from `abortHandshake(socket, 401, 'unpaired')`
+    // does not propagate to the WebSocket close-event per RFC 6455 §7.4.2,
+    // so the browser surfaces it as the generic abnormal-closure code 1006.
+    // Per the RESEARCH §7 trade-off we accept a rare false-positive on a
+    // transient network blip during the initial handshake — Lance re-OTPs
+    // once in a blue moon, which is a 30-second friction event.
+    const hasToken = !!localStorage.getItem('clideck.deviceToken');
+    const isAuthFail = event.code === 4401 ||
+      (!connectedAtLeastOnce && event.code === 1006 && hasToken);
+    if (isAuthFail) {
+      localStorage.removeItem('clideck.deviceToken');
+      localStorage.removeItem('clideck.deviceId');
+      window.location.href = '/pair';
+      return;
+    }
+
+    // Reset the per-instance handshake flag for the next reconnect attempt.
+    // The new WebSocket constructed by `connect()` after the setTimeout
+    // below is a fresh instance — its onopen will re-set the flag.
+    connectedAtLeastOnce = false;
     if (!lastDropToastId) {
       lastDropToastId = `ws-reconnect-${Date.now()}`;
       showToast('Connection lost — reconnecting…', { id: lastDropToastId, type: 'warn', duration: 0 });
