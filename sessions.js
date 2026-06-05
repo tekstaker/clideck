@@ -23,6 +23,23 @@ const clients = new Set();
 // Persisted sessions awaiting resume (loaded on startup, cleared as they're resumed)
 let resumable = [];
 
+// Persisted plain-shell sessions awaiting REPLAY (loaded on startup, drained
+// once `rehydrateReplayable(cfg)` spawns them as fresh PTYs in their saved
+// cwd). The replay vs resume distinction is the heart of this design:
+//   resume  = re-attach an agent CLI to its prior session via
+//             `--resume {{sessionId}}` — needs a captured token, has chat
+//             history (the `resumable` track above).
+//   replay  = spawn a brand-new PTY in the saved cwd — no token, no history,
+//             just "put the tab back" (this track).
+// Survive-the-container-restart, not survive-the-exit. A session lands here
+// only when its preset declares the EXPLICIT `canReplay` capability — never
+// by falling through from "not resumable" (CONTEXT D-01).
+let replayable = [];
+
+// Boot-time spawn-storm cap (CONTEXT D-03 / threat T-14-DoS): a corrupted or
+// runaway sessions.json must not trigger hundreds of PTY spawns at boot.
+const MAX_REPLAY_REHYDRATE = 50;
+
 const broadcastListeners = [];
 
 function addBroadcastListener(fn) {
@@ -643,6 +660,18 @@ function __getResumableForTest() {
   }
   return resumable;
 }
+function __setReplayableForTest(arr) {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__setReplayableForTest is test-only');
+  }
+  replayable = Array.isArray(arr) ? arr.slice() : [];
+}
+function __getReplayableForTest() {
+  if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    throw new Error('__getReplayableForTest is test-only');
+  }
+  return replayable;
+}
 
 function getResumable(cfg) {
   if (!cfg) return resumable;
@@ -674,32 +703,61 @@ function sendBuffers(ws) {
 // --- Persistence: save on shutdown, load on startup ---
 
 function saveSessions(cfg) {
-  // Only persist live sessions that are actually resumable
+  // Persist BOTH tracks into one flat sessions.json array (Shape 1, D-02):
+  //   resumable  — agent CLIs with --resume + token.
+  //   replayable — plain shells with the explicit canReplay capability,
+  //                tagged `replayable: true` on disk.
+  // Partitioning is driven by EXPLICIT capability flags (D-01): a session
+  // whose cmd has NEITHER canResume+resumeCommand NOR canReplay is persisted
+  // to NEITHER bucket — no silent replay fallthrough.
   let skippedNoToken = 0;
-  const live = [...sessions]
-    .filter(([, s]) => {
-      if (s.ephemeral) return false;
-      const cmd = cfg.commands.find(c => c.id === s.commandId);
-      if (!cmd?.canResume || !cmd.resumeCommand) return false;
-      // If resume needs a session ID, we must have captured one
+  const liveResumable = [];
+  const liveReplayable = [];
+  for (const [id, s] of sessions) {
+    if (s.ephemeral) continue;
+    const cmd = cfg.commands.find(c => c.id === s.commandId);
+    if (!cmd) continue;
+    if (cmd.canResume && cmd.resumeCommand) {
+      // Resumable path — needs a session token when the resume command
+      // templates {{sessionId}}.
       if (cmd.resumeCommand.includes('{{sessionId}}') && !s.sessionToken) {
         skippedNoToken++;
-        return false;
+        continue;
       }
-      return true;
-    })
-    .map(([id, s]) => ({
-      id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
-      themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
-      roleName: s.roleName || null,
-      lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
-      savedAt: new Date().toISOString(),
-    }));
+      liveResumable.push({
+        id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
+        themeId: s.themeId, sessionToken: s.sessionToken, projectId: s.projectId, muted: !!s.muted,
+        roleName: s.roleName || null,
+        lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+        savedAt: new Date().toISOString(),
+      });
+    } else if (cmd.canReplay) {
+      // Replayable path — plain shells. Persisted so the tab survives a
+      // server restart; rehydrated as a fresh PTY in the saved cwd on next
+      // boot. No token, no resume command, no chat history replay.
+      liveReplayable.push({
+        id, name: s.name, commandId: s.commandId, presetId: s.presetId || 'shell', cwd: s.cwd,
+        themeId: s.themeId, projectId: s.projectId, muted: !!s.muted,
+        roleName: s.roleName || null,
+        lastPreview: s.lastPreview || '', lastActivityAt: s.lastActivityAt || null,
+        savedAt: new Date().toISOString(),
+        replayable: true,
+      });
+    }
+    // else: neither capability — not persisted (D-01, no else-fallthrough).
+  }
 
-  // Merge with still-pending resumables that were never resumed
-  const liveIds = new Set(live.map(s => s.id));
-  const pending = resumable.filter(s => !liveIds.has(s.id));
-  const data = [...live, ...pending];
+  // Merge each track with still-pending entries from its module array (a
+  // resumable a user never resumed, or a replayable whose rehydrate failed
+  // and is still on disk).
+  const liveResumableIds = new Set(liveResumable.map(s => s.id));
+  const pendingResumable = resumable.filter(s => !liveResumableIds.has(s.id));
+  const liveReplayableIds = new Set(liveReplayable.map(s => s.id));
+  const pendingReplayable = replayable.filter(s => !liveReplayableIds.has(s.id));
+
+  const resumableArr = [...liveResumable, ...pendingResumable];
+  const replayableArr = [...liveReplayable, ...pendingReplayable];
+  const data = [...resumableArr, ...replayableArr];
 
   writeFileSync(SAVED_PATH, JSON.stringify(data, null, 2));
   if (skippedNoToken > 0 && skippedNoToken !== lastSkippedNoTokenWarn) {
@@ -712,9 +770,17 @@ function saveSessions(cfg) {
 function loadSessions() {
   if (!existsSync(SAVED_PATH)) return;
   try {
-    resumable = JSON.parse(readFileSync(SAVED_PATH, 'utf8'));
-    console.log(`Loaded ${resumable.length} resumable session(s)`);
-  } catch { resumable = []; }
+    const all = JSON.parse(readFileSync(SAVED_PATH, 'utf8'));
+    // Partition on the `replayable` discriminator. Entries without the flag
+    // (including all pre-fix sessions.json files) land in resumable exactly
+    // as before — zero-downtime upgrade (AC 4).
+    resumable = all.filter(e => !e.replayable);
+    replayable = all.filter(e => e.replayable);
+    console.log(`Loaded ${resumable.length} resumable + ${replayable.length} replayable session(s)`);
+  } catch {
+    resumable = [];
+    replayable = [];
+  }
 }
 
 let autoSaveInterval = null;
@@ -755,10 +821,71 @@ async function shutdown(cfg) {
   process.stdout.write(`done (${Date.now() - t0}ms)\n`);
 }
 
+// Rehydrate plain-shell tabs that were persisted via the replayable track.
+// Called once from server.js after loadSessions(), before transcript.init().
+// Each replayable becomes a fresh PTY in its saved cwd — no token, no chat
+// replay, no agent CLI involvement. The live sessions Map gets the new entry
+// just like a user-initiated tab; sessions.list() surfaces it to the first
+// connecting WebSocket.
+function rehydrateReplayable(cfg) {
+  if (!cfg || !Array.isArray(cfg.commands)) return 0;
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+
+  // Cap the spawn loop (D-03 / T-14-DoS). Process at most the first
+  // MAX_REPLAY_REHYDRATE entries; if more were persisted, drop the overflow
+  // with a single WARN naming the dropped count.
+  let toProcess = replayable;
+  if (replayable.length > MAX_REPLAY_REHYDRATE) {
+    const dropped = replayable.length - MAX_REPLAY_REHYDRATE;
+    console.warn(`[rehydrate] ${replayable.length} replayable session(s) exceeds cap ${MAX_REPLAY_REHYDRATE}; dropping ${dropped}`);
+    toProcess = replayable.slice(0, MAX_REPLAY_REHYDRATE);
+  }
+
+  let spawned = 0;
+  for (const entry of toProcess) {
+    const cmd = cfg.commands.find(c => c.id === entry.commandId);
+    if (!cmd) {
+      console.warn(`[rehydrate] skipping ${entry.id?.slice(0, 8)} — commandId '${entry.commandId}' not in config`);
+      continue;
+    }
+    // Validate cwd; fall back to $HOME if the saved path no longer exists.
+    // Threat T-14-cwd: a corrupted sessions.json could carry a bogus cwd;
+    // spawning into it would either fail or land in an attacker-prepared
+    // dir. Fail safe to $HOME (AC 5).
+    let cwd = entry.cwd;
+    if (cwd && !existsSync(cwd)) {
+      console.warn(`[rehydrate] ${entry.id?.slice(0, 8)} cwd '${cwd}' does not exist; falling back to $HOME`);
+      cwd = home;
+    }
+    const result = createProgrammatic({
+      commandId: entry.commandId,
+      cwd,
+      themeId: entry.themeId,
+      projectId: entry.projectId,
+      name: entry.name,
+    }, cfg);
+    if (result?.error) {
+      console.warn(`[rehydrate] ${entry.id?.slice(0, 8)} failed: ${result.error}`);
+      continue;
+    }
+    spawned++;
+  }
+  if (replayable.length > 0) {
+    console.log(`Rehydrated ${spawned}/${replayable.length} replayable session(s)`);
+  }
+  // Drain — the live sessions Map is now the single source of truth for
+  // these entries. The next saveSessions cycle re-derives the replayable
+  // persistence from the live Map (load-bearing: leaving stale entries here
+  // would double them on the next save).
+  replayable = [];
+  return spawned;
+}
+
 module.exports = {
   clients, broadcast, addBroadcastListener, getSessions: () => sessions,
   create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close, pause, captureToken,
   list, getResumable, renameResumable, reorderSessions, sendBuffers,
-  loadSessions, startAutoSave, shutdown,
+  loadSessions, startAutoSave, shutdown, rehydrateReplayable,
   __setResumableForTest, __getResumableForTest,
+  __setReplayableForTest, __getReplayableForTest,
 };

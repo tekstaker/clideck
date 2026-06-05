@@ -77,7 +77,7 @@ const DEFAULTS = {
   commands: [
     {
       id: '1', label: 'Shell', icon: 'terminal', command: defaultShell, enabled: true,
-      defaultPath: '', isAgent: false, canResume: false, resumeCommand: null, sessionIdPattern: null,
+      defaultPath: '', isAgent: false, canResume: false, canReplay: true, resumeCommand: null, sessionIdPattern: null,
     },
   ],
   confirmClose: true,
@@ -163,6 +163,7 @@ function migrate(cfg) {
     else if (!cmd.icon) cmd.icon = 'terminal';
     if (cmd.isAgent === undefined)          cmd.isAgent = preset?.isAgent ?? false;
     if (cmd.canResume === undefined)        cmd.canResume = preset?.canResume ?? false;
+    if (cmd.canReplay === undefined)        cmd.canReplay = preset?.canReplay ?? false;
     if (cmd.resumeCommand === undefined)    cmd.resumeCommand = preset?.resumeCommand || null;
     if (cmd.sessionIdPattern === undefined) cmd.sessionIdPattern = preset?.sessionIdPattern || null;
     if (cmd.outputMarker === undefined)     cmd.outputMarker = preset?.outputMarker || null;
@@ -189,7 +190,7 @@ function migrate(cfg) {
       cfg.commands.push({
         id: crypto.randomUUID(), presetId: preset.presetId, label: preset.name, icon: preset.icon,
         command: preset.command, enabled: true, defaultPath: '',
-        isAgent: preset.isAgent, canResume: preset.canResume,
+        isAgent: preset.isAgent, canResume: preset.canResume, canReplay: preset.canReplay ?? false,
         resumeCommand: preset.resumeCommand, sessionIdPattern: preset.sessionIdPattern,
         outputMarker: preset.outputMarker || null,
       });

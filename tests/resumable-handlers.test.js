@@ -162,3 +162,193 @@ describe('close removes a resumable entry', () => {
     expect(recorded.find(m => m.type === 'sessions.resumable')).toBeUndefined();
   });
 });
+
+// --- Phase 14: replayable persistence track ---
+//
+// Agent sessions (canResume:true) use the existing resumable path with
+// --resume + session token. Plain shells (canResume:false, canReplay:true)
+// had no persistence, so a `docker compose restart` lost every shell tab.
+// The replayable track persists the same metadata (id, name, cwd, commandId,
+// presetId, themeId, projectId, muted, savedAt) with a `replayable:true`
+// discriminator and rehydrates them as fresh PTYs in their saved cwd on
+// boot. No token, no chat replay, no resume() codepath.
+//
+// CRITICAL (CONTEXT D-01): partitioning is driven by the EXPLICIT
+// `canReplay` capability, NOT an `else`-fallthrough on !canResume. The
+// shell cmd in SHELL_CFG therefore carries canReplay:true so saveSessions's
+// explicit replay branch fires; a cmd with NEITHER capability is persisted
+// to NEITHER bucket.
+
+const SHELL_CFG = {
+  commands: [
+    { id: 'shell', label: 'Shell', command: process.platform === 'win32' ? 'cmd' : '/bin/sh', canResume: false, canReplay: true, resumeCommand: null },
+    { id: 'claude', label: 'Claude', command: 'claude', canResume: true, canReplay: false, resumeCommand: 'claude --resume {{sessionId}}' },
+  ],
+};
+
+const REPLAYABLE_ENTRY = {
+  id: 'sess-R-1',
+  name: 'My shell tab',
+  commandId: 'shell',
+  presetId: 'shell',
+  // The rehydrate tests populate cwd with a real existsSync-positive path
+  // per-test; the load-partition + save tests don't actually spawn so any
+  // path works there.
+  cwd: 'will-be-overwritten-per-test',
+  themeId: 'default',
+  projectId: null,
+  muted: false,
+  roleName: null,
+  lastPreview: '',
+  lastActivityAt: null,
+  savedAt: '2026-06-03T20:00:00.000Z',
+  replayable: true,
+};
+
+describe('saveSessions persists replayable shells alongside resumables', () => {
+  it('a saved file with no live sessions round-trips both arrays', () => {
+    const sessions = freshSessionsModule();
+    sessions.__setResumableForTest([{ ...SAMPLE_ENTRY }]);
+    sessions.__setReplayableForTest([{ ...REPLAYABLE_ENTRY, cwd: TEST_DATA_DIR }]);
+
+    // No live sessions in the Map — only the pending arrays. saveSessions
+    // still must round-trip both into the on-disk file.
+    sessions.shutdown(SHELL_CFG); // shutdown -> saveSessions + kill PTYs (none)
+
+    const saved = join(TEST_DATA_DIR, 'sessions.json');
+    expect(existsSync(saved)).toBe(true);
+    const onDisk = JSON.parse(readFileSync(saved, 'utf8'));
+
+    const replayables = onDisk.filter(e => e.replayable === true);
+    const resumables  = onDisk.filter(e => !e.replayable);
+
+    expect(resumables).toHaveLength(1);
+    expect(resumables[0].id).toBe('sess-A');
+    expect(resumables[0].replayable).toBeUndefined();
+
+    expect(replayables).toHaveLength(1);
+    expect(replayables[0].id).toBe('sess-R-1');
+    expect(replayables[0].commandId).toBe('shell');
+    expect(replayables[0].cwd).toBe(TEST_DATA_DIR);
+    expect(replayables[0].sessionToken).toBeUndefined(); // no token on replayable shape
+  });
+});
+
+describe('loadSessions partitions resumable vs replayable', () => {
+  it('routes entries based on the replayable discriminator', () => {
+    // Hand-craft a sessions.json with both shapes.
+    const SAVED_FILE = join(TEST_DATA_DIR, 'sessions.json');
+    const fixture = [
+      { ...SAMPLE_ENTRY, id: 'sess-A' },
+      { ...REPLAYABLE_ENTRY, id: 'sess-R-1', cwd: TEST_DATA_DIR },
+      { ...REPLAYABLE_ENTRY, id: 'sess-R-2', name: 'Other shell', cwd: TEST_DATA_DIR },
+    ];
+    require('fs').writeFileSync(SAVED_FILE, JSON.stringify(fixture, null, 2));
+
+    const sessions = freshSessionsModule();
+    sessions.loadSessions();
+
+    expect(sessions.__getResumableForTest().map(s => s.id)).toEqual(['sess-A']);
+    expect(sessions.__getReplayableForTest().map(s => s.id)).toEqual(['sess-R-1', 'sess-R-2']);
+  });
+
+  it('pre-fix sessions.json with no replayable key loads as resumable-only (zero-downtime upgrade)', () => {
+    // The pre-fix format: a flat array with no `replayable` field on any
+    // entry. Every entry must land in the resumable array — the
+    // pre-existing user data must not silently change tracks (AC 4).
+    const SAVED_FILE = join(TEST_DATA_DIR, 'sessions.json');
+    const fixture = [
+      { ...SAMPLE_ENTRY, id: 'sess-A' },
+      { ...SAMPLE_ENTRY, id: 'sess-B', name: 'Another agent' },
+    ];
+    require('fs').writeFileSync(SAVED_FILE, JSON.stringify(fixture, null, 2));
+
+    const sessions = freshSessionsModule();
+    sessions.loadSessions();
+
+    expect(sessions.__getResumableForTest().map(s => s.id)).toEqual(['sess-A', 'sess-B']);
+    expect(sessions.__getReplayableForTest()).toHaveLength(0);
+  });
+});
+
+describe('rehydrateReplayable spawns plain shells in their saved cwd', () => {
+  it('spawns each replayable via createProgrammatic and drains the array', () => {
+    const sessions = freshSessionsModule();
+    // The cwd must exist for the existsSync check inside rehydrateReplayable
+    // to keep the saved path (rather than falling back to $HOME).
+    sessions.__setReplayableForTest([
+      { ...REPLAYABLE_ENTRY, id: 'sess-R-1', cwd: TEST_DATA_DIR, name: 'Shell tab' },
+    ]);
+
+    expect(sessions.__getReplayableForTest()).toHaveLength(1);
+
+    const spawned = sessions.rehydrateReplayable(SHELL_CFG);
+
+    // Replayable array drained — the live sessions Map is now the source
+    // of truth for these entries.
+    expect(sessions.__getReplayableForTest()).toHaveLength(0);
+
+    // One PTY spawned. The spawnSession path uses real node-pty, so the
+    // shell command must exist on the test host (/bin/sh on POSIX,
+    // cmd.exe on Windows — both ship with the OS).
+    expect(spawned).toBe(1);
+
+    // Cleanup: shutdown closes the spawned PTY so the runner doesn't leave
+    // a stray process.
+    sessions.shutdown(SHELL_CFG);
+  });
+
+  it('falls back to $HOME when the saved cwd no longer exists (AC 5 / T-14-cwd)', () => {
+    const sessions = freshSessionsModule();
+    sessions.__setReplayableForTest([
+      { ...REPLAYABLE_ENTRY, id: 'sess-R-bad', cwd: '/this/path/does/not/exist/at/all/clideck-test' },
+    ]);
+
+    const home = process.env.HOME || process.env.USERPROFILE;
+    expect(home).toBeTruthy(); // sanity: the test host has a home dir
+
+    const spawned = sessions.rehydrateReplayable(SHELL_CFG);
+    expect(spawned).toBe(1); // still spawned, but in $HOME instead of the missing cwd
+
+    sessions.shutdown(SHELL_CFG);
+  });
+
+  it('skips entries whose commandId is no longer in the config', () => {
+    const sessions = freshSessionsModule();
+    sessions.__setReplayableForTest([
+      { ...REPLAYABLE_ENTRY, id: 'sess-R-orphan', cwd: TEST_DATA_DIR, commandId: 'no-such-command' },
+    ]);
+
+    const spawned = sessions.rehydrateReplayable(SHELL_CFG);
+    expect(spawned).toBe(0);
+    // Array still drained even on skip — the user can re-spawn via the UI
+    // if they want, but the entry doesn't persistently rehydrate-fail.
+    expect(sessions.__getReplayableForTest()).toHaveLength(0);
+  });
+
+  it('caps rehydrate at 50 entries and WARN-logs the dropped count (D-03 / T-14-DoS)', async () => {
+    const { vi } = await import('vitest');
+    const sessions = freshSessionsModule();
+    // 60 valid replayable entries — 10 over the cap.
+    const many = [];
+    for (let i = 0; i < 60; i++) {
+      many.push({ ...REPLAYABLE_ENTRY, id: `sess-R-${i}`, cwd: TEST_DATA_DIR });
+    }
+    sessions.__setReplayableForTest(many);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const spawned = sessions.rehydrateReplayable(SHELL_CFG);
+      // At most 50 spawned; array drained regardless.
+      expect(spawned).toBeLessThanOrEqual(50);
+      expect(sessions.__getReplayableForTest()).toHaveLength(0);
+      // A warn fired naming the dropped count (60 - 50 = 10).
+      const droppedWarn = warnSpy.mock.calls.find(args =>
+        args.some(a => typeof a === 'string' && /10/.test(a)));
+      expect(droppedWarn).toBeTruthy();
+    } finally {
+      warnSpy.mockRestore();
+      sessions.shutdown(SHELL_CFG);
+    }
+  });
+});

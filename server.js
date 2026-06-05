@@ -58,6 +58,12 @@ const plugins = require('./plugin-loader');
 
 ensurePtyHelper();
 sessions.loadSessions();
+// Rehydrate plain-shell tabs persisted via the replayable track (Phase 14).
+// Must run AFTER loadSessions (so the replayable[] array is populated) and
+// BEFORE the transcript initializes below (so the rehydrated live sessions
+// exist when it builds its resumable-id set). handlers.getConfig() is safe
+// here because `require('./handlers')` has already loaded its module-scope cfg.
+sessions.rehydrateReplayable(require('./handlers').getConfig());
 transcript.init(sessions.broadcast, new Set(sessions.getResumable().map(s => s.id)), (...args) => plugins.notifyTranscript(...args));
 telemetry.init(sessions.broadcast, sessions.getSessions, sessions.captureToken);
 require('./opencode-bridge').init(sessions.broadcast, sessions.getSessions, sessions.captureToken);
