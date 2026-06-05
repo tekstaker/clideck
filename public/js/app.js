@@ -156,6 +156,13 @@ function connect() {
     }
     startHeartbeat();
     send({ type: 'remote.status' });
+    // Phase 16 — warm state.linkedDevices on every WS handshake so the
+    // Settings → Linked devices panel renders immediately when the user
+    // navigates to it (no fetch-on-open round trip needed). Cheap on the
+    // server: handlers.js:710 is an O(devices + clients) iteration.
+    // Subsequent freshness comes from the `device.revoked` broadcast arm
+    // below, which re-pulls when ANY device on the system is revoked.
+    send({ type: 'device.list.get' });
   };
 
   state.ws.onmessage = ({ data }) => {
@@ -447,6 +454,39 @@ function connect() {
         break;
       case 'plugins':
         loadPlugins(msg.list);
+        break;
+      // Phase 16 — linked-devices arms (CONTEXT D-06, AC5/AC6).
+      //
+      // device.list:        server reply to a `device.list.get` pull.
+      //                     Each entry is {id, label, paired_at, last_seen, live}
+      //                     per handlers.js:716-722. We hand the array to
+      //                     state.linkedDevices and re-render the panel via
+      //                     the window callback (avoids a circular import
+      //                     between app.js and settings.js — mirrors
+      //                     window.__refreshStatusBadge precedent at line 100).
+      //
+      // device.revoked:     broadcast to every remaining client when any
+      //                     device is revoked (handlers.js:761). The revoked
+      //                     row's own ws was already closed with 4401 by
+      //                     sessions.closeDevice — that path runs through
+      //                     this client's onclose hybrid (line 552) and
+      //                     redirects to /pair. For surviving clients, the
+      //                     row is no longer in the next device.list, so we
+      //                     re-pull and re-render.
+      //
+      // device.revoke.result:  ack to the caller of `device.revoke` with
+      //                     `{ok, deviceId, closedCount}`. The UI relies on
+      //                     the broadcast (above) to refresh, not the ack —
+      //                     no-op here so the default-case `console.warn`
+      //                     for unhandled types doesn't fire.
+      case 'device.list':
+        state.linkedDevices = Array.isArray(msg.list) ? msg.list : [];
+        if (typeof window.__refreshLinkedDevices === 'function') window.__refreshLinkedDevices();
+        break;
+      case 'device.revoked':
+        send({ type: 'device.list.get' });
+        break;
+      case 'device.revoke.result':
         break;
       case 'plugin.install.result': {
         const btn = document.querySelector(`.plugin-install-btn[data-plugin-id="${msg.pluginId}"]`);

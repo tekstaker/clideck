@@ -95,8 +95,130 @@ export function renderSettings() {
   renderNotifications();
   renderFontSize();
   updateVersionFooter();
+  renderLinkedDevices();
   restoreSettingsFocus(focusSnapshot);
 }
+
+// ── Linked devices (Phase 16) ──
+//
+// Renders state.linkedDevices into #linked-devices-list. The list is
+// populated by the `device.list` WS broadcast (handlers.js:710 — sends
+// `{type:'device.list', list:[...]}` on a `device.list.get` pull from
+// app.js's onopen). Each row:
+//   - label (escaped; D-04 disambiguation suffix `(2)`, `(3)` for collisions)
+//   - paired_at (relative — "5m ago" / "2d ago" / falls back to YYYY-MM-DD)
+//   - last_seen ("active now" if live, otherwise relative)
+//   - live dot (green if device.live, slate otherwise)
+//   - "This device" badge when device.id === state.deviceId
+//   - Revoke button (red), driving the D-06 two-variant confirm modal
+//
+// Per CLAUDE.md §13 — only the public fields are rendered. The server
+// (handlers.js:710-723) strips token_hash and any other internal field;
+// this renderer never logs/echoes the list payload.
+function fmtRelativeTime(iso) {
+  if (!iso) return '—';
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return '—';
+  const sec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (sec < 60)        return `${sec}s ago`;
+  const m = Math.floor(sec / 60);
+  if (m < 60)          return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24)          return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 30)          return `${d}d ago`;
+  // Fall back to ISO date (YYYY-MM-DD) for anything older than 30 days.
+  try { return new Date(then).toISOString().slice(0, 10); } catch { return '—'; }
+}
+
+export function renderLinkedDevices() {
+  const host = document.getElementById('linked-devices-list');
+  if (!host) return;  // panel not in DOM (shouldn't happen post-16-07)
+  const devices = Array.isArray(state.linkedDevices) ? state.linkedDevices : [];
+
+  if (devices.length === 0) {
+    host.innerHTML = '<p class="text-sm text-slate-500 italic">No devices paired yet.</p>';
+    return;
+  }
+
+  // D-04 label disambiguation. Server keeps labels free-form; the UI
+  // appends `(2)`, `(3)`, ... to duplicates in render order.
+  const labelCount = new Map();
+  const rows = devices.map(dev => {
+    const baseLabel = String(dev.label || 'Unnamed device');
+    const seen = labelCount.get(baseLabel) || 0;
+    const displayLabel = seen === 0 ? baseLabel : `${baseLabel} (${seen + 1})`;
+    labelCount.set(baseLabel, seen + 1);
+
+    const isCurrent = dev.id === state.deviceId;
+    const live = dev.live === true;
+    const lastSeenStr = live ? 'active now' : fmtRelativeTime(dev.last_seen);
+    const pairedStr   = fmtRelativeTime(dev.paired_at);
+
+    // Tailwind-style classes mirroring the agent-card shape (settings.js:245).
+    return `
+      <div class="flex items-center gap-3 px-3 py-2.5 bg-slate-800/50 border border-slate-700/50 rounded-lg" data-device-id="${esc(dev.id)}">
+        <span class="inline-block w-2 h-2 rounded-full ${live ? 'bg-emerald-400' : 'bg-slate-600'}" title="${live ? 'Connected now' : 'Offline'}"></span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="text-sm text-slate-200 truncate">${esc(displayLabel)}</span>
+            ${isCurrent ? '<span class="px-1.5 py-0.5 text-[10px] uppercase tracking-wider bg-blue-500/15 text-blue-300 rounded">This device</span>' : ''}
+          </div>
+          <div class="text-[11px] text-slate-500">Paired ${esc(pairedStr)} · Last seen ${esc(lastSeenStr)}</div>
+        </div>
+        <button data-action="revoke" class="px-3 py-1.5 text-xs rounded-md bg-red-600/15 text-red-300 hover:bg-red-600 hover:text-white border border-red-500/30 transition-colors">Revoke</button>
+      </div>`;
+  }).join('');
+
+  host.innerHTML = rows;
+}
+
+// Phase 16 — register a refresh callback on window so app.js can invoke
+// renderLinkedDevices from the WS `device.list` arm without importing
+// settings.js (mirrors window.__refreshStatusBadge at line 141 above).
+window.__refreshLinkedDevices = renderLinkedDevices;
+
+// Revoke click handler — delegated on the #linked-devices-list container
+// so it survives re-renders. Resolves the device from state.linkedDevices
+// by data-device-id, picks the D-06 copy variant by comparing to
+// state.deviceId, and on confirm sends `{type:'device.revoke', deviceId}`.
+// The server (handlers.js:749) handles the rest:
+//   - removes the device from devices.json
+//   - calls sessions.closeDevice(deviceId) → close(4401,'revoked') on any
+//     matching live ws (this includes THIS ws if the user revoked self)
+//   - broadcasts {type:'device.revoked', deviceId} to surviving clients
+//
+// app.js's onclose hybrid (line 552) catches the 4401 and clears
+// localStorage + redirects to /pair — so for self-revoke the user's
+// browser navigates away before this code has anything else to do.
+document.getElementById('linked-devices-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action="revoke"]');
+  if (!btn) return;
+  const row = btn.closest('[data-device-id]');
+  if (!row) return;
+  const deviceId = row.getAttribute('data-device-id');
+  const dev = (state.linkedDevices || []).find(d => d.id === deviceId);
+  if (!dev) return;
+
+  const isCurrent = dev.id === state.deviceId;
+  // D-06 two-variant copy. Per CONTEXT.md §D-06 planner pin: confirm.js
+  // exposes only #cc-message (no separate title element), so the title
+  // intent is folded into the lead clause. Both variants contain the
+  // load-bearing substring "will be signed out immediately" so Wave 0
+  // e2e/revoke-flow.spec.js's substring assertions match either way.
+  const label = String(dev.label || 'this device');
+  const otherCopy = `Revoke '${label}'? ${label} will be signed out immediately. It can pair again with a new code.`;
+  const selfCopy  = `Revoke this device? You'll be signed out of this browser immediately and the active session list will close. You can pair this device again with a new code from another linked device or by SSH-ing into the server.`;
+
+  const ok = await confirmClose(
+    isCurrent ? selfCopy : otherCopy,
+    isCurrent ? 'Revoke this device' : 'Revoke',
+  );
+  if (!ok) return;
+  send({ type: 'device.revoke', deviceId: dev.id });
+  // No optimistic update — the server's `device.revoked` broadcast (or
+  // for self-revoke, the 4401 onclose redirect) is the source of truth.
+});
 
 // ── Font size stepper (Phase 9 — terminal display sizing) ──
 //
