@@ -6,6 +6,9 @@ files:
   - public/js/terminals.js
   - server.js
   - sessions.js
+promoted: true
+promoted_to: .planning/2026-06-04-clipboard-image-paste/SPEC.md
+promoted_at: 2026-06-04
 ---
 
 ## Problem
