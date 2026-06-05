@@ -51,6 +51,7 @@ checkSelfUpdate().then(() => {
 
 const { onConnection } = require('./handlers');
 const sessions = require('./sessions');
+const authGate = require('./auth-gate');
 
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
@@ -399,11 +400,41 @@ function isAllowedWsOrigin(origin, hostHeader) {
 }
 const wss = new WebSocketServer({
   server,
-  verifyClient: ({ req }) => {
-    return isAllowedWsOrigin(req.headers.origin, req.headers.host);
-  },
+  // Phase 16 — gate WS upgrades on the device-token in Sec-WebSocket-Protocol.
+  // Replaces the prior 1-arg verifyClient (which only ran the origin check)
+  // with the 2-arg async form so we can also reject with HTTP 401 'unpaired'
+  // BEFORE ws.completeUpgrade runs. Unpaired sockets are aborted at the HTTP
+  // layer — they NEVER reach handlers.js:267's sessions.clients.add(ws),
+  // so AC4's "no clients.count broadcast for unpaired" invariant is correct
+  // by construction (Phase 15 merge-safety, RESEARCH §7).
+  //
+  // The origin check is preserved verbatim and runs FIRST inside
+  // authGate.makeVerifyClient (RESEARCH §10.1) — non-browser clients with
+  // no Origin header still pass through (isAllowedWsOrigin returns true).
+  verifyClient: authGate.makeVerifyClient({ devices, isAllowedWsOrigin }),
+  // Echo back the sentinel subprotocol so the browser handshake completes
+  // for accepted tokens. ws will only emit 'connection' AFTER verifyClient
+  // calls callback(true), so we know any protocol negotiation reaching
+  // handleProtocols is from an authenticated request — but we still defend
+  // by checking the sentinel is in the offered set. Returning false omits
+  // the Sec-WebSocket-Protocol response header, which the browser treats
+  // as a handshake failure (event.code === 1006). The test suite asserts
+  // that we return the sentinel string, NOT the raw token (RESEARCH §1 R-1).
+  handleProtocols: (protocols) => protocols.has('clideck-device-token') ? 'clideck-device-token' : false,
 });
-wss.on('connection', onConnection);
+wss.on('connection', (ws, req) => {
+  // Phase 16 Pattern A (RESEARCH §4) — tag the ws with the authenticated
+  // device BEFORE handing to onConnection so revoke (sessions.closeDevice)
+  // can identify the matching ws by ws.deviceId. req.clideckDevice was
+  // stashed by authGate.makeVerifyClient — guaranteed present here because
+  // we only reach the 'connection' event when verifyClient called
+  // callback(true). Per CLAUDE.md §13 the raw token is NOT carried on the
+  // ws; only the opaque device id + the sha256:<hex> hash are kept.
+  ws.deviceId = req.clideckDevice.id;
+  ws.deviceTokenHash = req.clideckDevice.token_hash;
+  devices.touchLastSeen(req.clideckDevice.id);
+  return onConnection(ws);
+});
 // Without this listener, the WebSocketServer rethrows any error emitted by
 // the underlying http server — including EADDRINUSE during listen — which
 // would crash the process before tryListen's retry loop can fire. Logging
