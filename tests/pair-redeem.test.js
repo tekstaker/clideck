@@ -127,7 +127,14 @@ describe('POST /pair/redeem — handler contract (AC2, AC8, AC9)', () => {
   });
 
   it('expired OTP → 410 JSON { ok: false, error: "expired" }', async () => {
-    vi.useFakeTimers();
+    // [Rule 1 auto-fix] Default `vi.useFakeTimers()` in vitest@4 also fakes
+    // setImmediate — which deadlocks the `await new Promise(r => setImmediate(r))`
+    // in postJson() below (the test never resumes; suite times out at 5s).
+    // The expiry path only needs `Date.now()` to advance past the OTP's
+    // expiresAt — pair-otp.js reads `Date.now()` directly. Faking only
+    // Date + the timer functions used by vi.advanceTimersByTime leaves the
+    // event loop's setImmediate untouched so the response handoff completes.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
     const { devices, pairOtp, pairRoute } = freshPair();
     devices.load();
     const { otp } = pairOtp.mintOtp({ ttlSeconds: 300 });

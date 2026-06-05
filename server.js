@@ -58,6 +58,19 @@ const plugins = require('./plugin-loader');
 
 ensurePtyHelper();
 sessions.loadSessions();
+// Phase 16 — load paired-device registry and (if empty) mint a bootstrap OTP.
+// Placement is deliberate: AFTER sessions.loadSessions() so devices.load() has
+// a fully-initialised DATA_DIR, and BEFORE anything wires the wss / HTTP
+// surface so the auth gate has the device list available the moment the first
+// request arrives. bootstrapIfNeeded() is a no-op when devices.json already
+// contains paired entries; on a fresh install it prints a recovery OTP to
+// stdout and writes it to .clideck/bootstrap.otp (CLAUDE.md §13 bounded
+// exception, per CONTEXT D-02). See routes/pair.js for the redeem flow that
+// clears the bootstrap file on first successful pair.
+const devices = require('./devices');
+const pairOtp = require('./pair-otp');
+devices.load();
+pairOtp.bootstrapIfNeeded();
 // Rehydrate plain-shell tabs persisted via the replayable track (Phase 14).
 // Must run AFTER loadSessions (so the replayable[] array is populated) and
 // BEFORE the transcript initializes below (so the rehydrated live sessions
@@ -323,6 +336,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Phase 16 — device pairing HTTP routes. Must sit ABOVE the DEBUG POST
+  // catch-all below (which returns 200 '{}' for any unmatched POST and would
+  // otherwise swallow /pair/redeem + /pair/mint-otp). The inline `require()`
+  // mirrors the session-ask precedent at line ~247 above. `devices` and
+  // `pairOtp` are the module-scope singletons bound in the boot block above —
+  // captured by closure into this createServer callback.
+  if (req.method === 'POST' && req.url === '/pair/redeem') {
+    return require('./routes/pair').handleRedeemHttp(req, res, { devices, pairOtp });
+  }
+  if (req.method === 'POST' && req.url === '/pair/mint-otp') {
+    return require('./routes/pair').handleMintOtpHttp(req, res, { devices, pairOtp });
+  }
+
   // DEBUG: log any POST (agents might use /v1/traces, /v1/metrics, or other paths)
   if (req.method === 'POST') {
     // console.log(`OTLP: received POST ${req.url} (not handled)`);
@@ -337,6 +363,14 @@ const server = http.createServer((req, res) => {
       return res.end(readFileSync(pluginFile));
     }
     return res.writeHead(404).end();
+  }
+
+  // Phase 16 — GET /pair sits ABOVE the static fallthrough so the URL hits
+  // routes/pair.js (which serves public/pair.html with a defensive 503 if
+  // missing) rather than resolving as a bare `pair` static-asset request
+  // (which would 404 — public/pair.html has the `.html` extension).
+  if (req.method === 'GET' && req.url === '/pair') {
+    return require('./routes/pair').servePairHtml(req, res);
   }
 
   const filePath = ALIASES[req.url]
