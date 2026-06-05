@@ -107,35 +107,40 @@ test.describe('terminal interactions', () => {
 
     const id = await spawnSession(page);
 
-    // Clear the screen, then write a distinctive line at row 1.
-    // `\x1b[2J\x1b[H` = erase entire screen + home cursor.
     const KNOWN = 'AUTOCOPY-MARKER-XYZ123';
-    await injectOutput(page, id, `\x1b[2J\x1b[H${KNOWN}\r\n`);
 
-    // Locate the rendered xterm element, find the marker text's row,
-    // and drag-select across its horizontal extent. xterm renders
-    // characters to a canvas, so we approximate row position by
-    // querying the screen and dragging across a sensible column span.
+    // Locate the rendered xterm element so we can drag across its first row.
+    // xterm renders characters to a canvas, so we approximate row position by
+    // dragging across a sensible column span.
     const xterm = activeXterm(page);
     const box = await xterm.boundingBox();
     if (!box) throw new Error('xterm boundingBox unavailable');
 
-    // Drag across the first text row. xterm renders characters into
-    // a canvas/DOM grid; the exact pixel-to-column mapping shifts
-    // with font metrics, so we drag from before the start of the
-    // text to well past its end and assert the marker is contained
-    // (even if a leading/trailing char of selection picks up the
-    // padding column).
-    await page.mouse.move(box.x + 1, box.y + 12);
-    await page.mouse.down();
-    await page.mouse.move(box.x + 1, box.y + 12, { steps: 1 });
-    await page.mouse.move(box.x + 340, box.y + 12, { steps: 8 });
-    await page.mouse.up();
-
-    // Clipboard should now hold the marker. Allow leading/trailing
-    // whitespace and adjacent chars from the cell-grid edges.
-    const clip = await page.evaluate(() => navigator.clipboard.readText());
-    expect(clip).toContain(KNOWN);
+    // Clear the screen + write the marker at row 1, then drag-select it —
+    // retrying the WHOLE sequence until the clipboard holds the marker.
+    //
+    // The historic flake: the shell's startup banner (e.g. cmd.exe's
+    // "Microsoft Windows [Version …]") is emitted asynchronously over the
+    // PTY. Under full-suite load it can arrive AFTER our first
+    // `\x1b[2J\x1b[H` clear, clobbering row 1 so the drag copies the banner
+    // instead of the marker. Re-dragging alone can't recover (the marker is
+    // already overwritten), so each iteration re-issues the clear+marker;
+    // once the shell goes idle a fresh write sticks and the drag wins.
+    // `\x1b[2J\x1b[H` = erase entire screen + home cursor; mousedown starts a
+    // fresh selection each pass. Allows leading/trailing whitespace and
+    // adjacent cell-grid chars in the selection.
+    const writeMarkerThenSelect = async () => {
+      await injectOutput(page, id, `\x1b[2J\x1b[H${KNOWN}\r\n`);
+      await page.mouse.move(box.x + 1, box.y + 12);
+      await page.mouse.down();
+      await page.mouse.move(box.x + 1, box.y + 12, { steps: 1 });
+      await page.mouse.move(box.x + 340, box.y + 12, { steps: 8 });
+      await page.mouse.up();
+      return page.evaluate(() => navigator.clipboard.readText());
+    };
+    await expect
+      .poll(writeMarkerThenSelect, { timeout: 10_000, intervals: [150, 300, 600] })
+      .toContain(KNOWN);
 
     // "Copied" toast appears.
     const toast = page.locator('#tmx-toast-terminal-copy');
