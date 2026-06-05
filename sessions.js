@@ -74,6 +74,38 @@ function broadcast(msg) {
   for (const fn of broadcastListeners) try { fn(msg); } catch {}
 }
 
+// Phase 16 — close every live WS belonging to the given deviceId. Mirrors
+// the broadcast() iteration shape immediately above: same `clients` Set,
+// same readyState gate. Different action: ws.close(4401, 'revoked').
+//
+// Per-client try/catch — one wedged ws's close() throwing MUST NOT block
+// the others (this is the AC5 latency budget: 50 clients close in < 1s).
+// Returns the count of clients closed.
+//
+// 4401 = application-private close code (RFC 6455 §7.4.2 reserves
+// 4000-4999 for app use). RESEARCH §4 + PATTERNS §4.7 verified 4401 is
+// unused elsewhere in clideck — unambiguous for the client-side handler
+// in app.js (Plan 16-06). Reason 'revoked' distinguishes the post-
+// handshake revoke path from the pre-handshake 'unpaired' reject (which
+// surfaces as event.code === 1006 — see auth-gate.js / RESEARCH §7).
+//
+// Pattern A (RESEARCH §4): ws.deviceId is tagged on the ws instance at
+// successful upgrade in server.js's (ws, req) wrapper. n ≤ 5 paired
+// devices × handful of tabs per device = single-digit iterations,
+// sub-millisecond even with thousands of unrelated sockets in the Set.
+function closeDevice(deviceId) {
+  let closed = 0;
+  for (const c of clients) {
+    if (c.deviceId === deviceId && c.readyState === 1) {
+      try {
+        c.close(4401, 'revoked');
+        closed++;
+      } catch { /* one wedged ws must not block the rest */ }
+    }
+  }
+  return closed;
+}
+
 // --- Spawn a PTY and wire up a session ---
 
 function buildTelemetryEnv(id, cmd) {
@@ -882,7 +914,7 @@ function rehydrateReplayable(cfg) {
 }
 
 module.exports = {
-  clients, broadcast, addBroadcastListener, getSessions: () => sessions,
+  clients, broadcast, closeDevice, addBroadcastListener, getSessions: () => sessions,
   create, createProgrammatic, resume, restart, input, resize, rename, setTheme, setMute, setProject, setPreview, close, pause, captureToken,
   list, getResumable, renameResumable, reorderSessions, sendBuffers,
   loadSessions, startAutoSave, shutdown, rehydrateReplayable,
