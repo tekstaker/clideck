@@ -380,16 +380,18 @@ sessions.startAutoSave(() => require('./handlers').getConfig());
 // Graceful shutdown: persist sessions before exit. Each step is isolated in
 // its own try/catch so one stuck step (e.g. a node-pty.kill() that won't
 // return) can't prevent process.exit() from running and releasing port
-// 4000 — which is what stranded PID 12980 on 2026-05-18.
+// 4000 — which is what stranded PID 12980 on 2026-05-18. That isolated-try
+// shape is load-bearing and is preserved inside shutdown.js's step() helper.
+//
+// The orchestration (ack banner, per-step timing, 3s heartbeat, 10s watchdog,
+// goodbye) lives in ./shutdown.js so it can be unit-tested with injected fakes
+// without booting a server. Here we just wire the real modules in and register
+// the handlers, passing the signal name through so the banner can name it.
 const { getConfig } = require('./handlers');
-function onShutdown() {
-  try { plugins.shutdown(); }            catch (e) { console.error('[shutdown] plugins:',  e.message); }
-  try { activity.stop(); }               catch (e) { console.error('[shutdown] activity:', e.message); }
-  try { sessions.shutdown(getConfig()); } catch (e) { console.error('[shutdown] sessions:', e.message); }
-  process.exit(0);
-}
-process.on('SIGINT', onShutdown);
-process.on('SIGTERM', onShutdown);
+const { createShutdown } = require('./shutdown');
+const { onShutdown } = createShutdown({ plugins, activity, sessions, getConfig });
+process.on('SIGINT', () => onShutdown('SIGINT'));
+process.on('SIGTERM', () => onShutdown('SIGTERM'));
 
 // Retry the bind for ~6s on EADDRINUSE. When clideck is relaunched
 // manually (e.g. after a `taskkill` of a stuck instance) the OS can
