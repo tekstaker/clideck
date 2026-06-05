@@ -267,14 +267,73 @@ async function pasteIntoTerminal(sessionId) {
   // or any non-text blob, upload it to the session inbox; otherwise
   // fall through to the original text-paste behaviour (load-bearing:
   // the Ctrl+V phase's E2E and dictation tools depend on this).
+  //
+  // Phase 12 hardening (D-02..D-06): the clipboard branch used to swallow
+  // every failure silently, which made SnagIt / Snipping Tool / Chromium
+  // "Copy image" Ctrl+V appear to do nothing. We now (a) gate diagnostic
+  // logging behind window.__debugClipboard — mirroring the __logHotkeys
+  // precedent so triage needs no code change; (b) catch a per-item
+  // getType() throw and continue the loop instead of aborting; (c) surface
+  // a clipboard.read() rejection through a toast while STILL falling
+  // through to readText() so text paste survives; and (d) tell the user
+  // exactly what to do when neither a binary blob nor text produced any
+  // PTY input. We deliberately do NOT mint a client-side filename — the
+  // server's synthesizeFilename(mime) owns naming (H2 falsified), so the
+  // upload call stays at three args.
+
+  // D-05 — default-OFF diagnostic gate. Only ever READ, never assigned;
+  // set `window.__debugClipboard = true` in devtools to light it up.
+  const dbg = (...args) => {
+    if (typeof window !== 'undefined' && window.__debugClipboard) {
+      console.log('[clipboard]', ...args);
+    }
+  };
+
+  // Local flags so the D-04 unreadable-clipboard toast can fire with
+  // surgical precision: only when NEITHER a binary upload NOR a text
+  // payload reached the PTY. Without these we'd false-positive on every
+  // empty Ctrl+V.
+  let uploadFired = false;
+  let textSent = false;
+  // True once we see an item that advertised a non-text (binary) MIME but
+  // failed to turn into an upload — a getType() throw, an empty getType,
+  // or any path that left the loop without returning. This is what makes
+  // D-04 surgical: a genuinely empty clipboard (no items, or text-only
+  // items) never sets this, so the unreadable toast stays silent on every
+  // ordinary empty Ctrl+V.
+  let sawUnusableBinary = false;
+
   try {
     if (navigator.clipboard.read) {
       const items = await navigator.clipboard.read();
+      dbg('read() resolved', items.length, 'item(s)');
       for (const item of items) {
+        dbg('item.types', item.types);
         const binaryType = item.types.find(t => !t.startsWith('text/'));
         if (binaryType) {
-          const blob = await item.getType(binaryType);
+          let blob;
+          try {
+            // D-02 — a Windows clipboard data-lock can drop between
+            // read() and getType() (hypothesis H4). Catch it per-item
+            // and continue scanning the remaining items rather than
+            // aborting the whole paste.
+            blob = await item.getType(binaryType);
+            dbg('getType ok', binaryType, blob && blob.size, 'bytes');
+          } catch (getTypeErr) {
+            dbg('getType threw for', binaryType, getTypeErr && getTypeErr.message);
+            sawUnusableBinary = true;
+            continue;
+          }
+          if (!blob) {
+            // getType resolved nothing usable — treat as an unusable
+            // binary candidate so D-04 can prompt the save-and-drag path.
+            sawUnusableBinary = true;
+            continue;
+          }
+          // D-06 — EXACTLY three args. No fourth filename; no client-side
+          // paste-<epoch> minting. The server synthesizes the name.
           await uploadBlobToSession(sessionId, blob, binaryType);
+          uploadFired = true;
           // AC 1 — restore focus after the binary-blob paste so the
           // user's next Enter reaches the PTY without an intervening
           // click. rAF-deferred to win over any teardown that fires
@@ -286,16 +345,43 @@ async function pasteIntoTerminal(sessionId) {
       }
     }
   } catch (e) {
-    // navigator.clipboard.read can throw for various reasons (no
-    // permission, no clipboard, headless environments). Fall through
-    // to the text path — that's the existing behaviour and keeps the
-    // common case working even when read() is unavailable.
+    // D-03 — navigator.clipboard.read() can reject (no permission,
+    // clipboard lock, headless env). This used to be swallowed silently,
+    // hiding hypothesis H5. Now we log via the gate and surface an error
+    // toast naming the reason — but STILL fall through to readText() so
+    // the load-bearing text-paste contract (dictation tools, Phase 1
+    // E2E) survives. The toast id is distinct from 'paste-blob' so it
+    // doesn't dedupe against the upload toasts.
+    dbg('read() rejected', e && e.message);
+    showToast(`Clipboard read failed: ${e?.message || 'unknown error'}`, {
+      id: 'clipboard-read-error',
+      type: 'error',
+      duration: 4000,
+    });
   }
   try {
     const text = await navigator.clipboard.readText();
-    if (text) send({ type: 'input', id: sessionId, data: text });
+    if (text) {
+      send({ type: 'input', id: sessionId, data: text });
+      textSent = true;
+    }
   } catch {
     showToast('Clipboard read failed.', { type: 'error' });
+  }
+  // D-04 — narrow unreadable-clipboard toast. Fires only when neither a
+  // binary upload nor a text payload produced any PTY input — i.e. the
+  // clipboard held SOMETHING the browser surfaced but clideck couldn't
+  // use it. Does NOT fire on a successful binary upload (we return early
+  // above), on a successful text paste, or on a genuinely empty clipboard
+  // that pasted nothing of value. Distinct toast id from both 'paste-blob'
+  // and the D-03 id.
+  if (!uploadFired && !textSent && sawUnusableBinary) {
+    dbg('saw binary item(s) but none usable and no text — firing unreadable toast');
+    showToast("clideck couldn't read that clipboard payload — save it as a file and drag it in.", {
+      id: 'clipboard-unreadable',
+      type: 'error',
+      duration: 5000,
+    });
   }
   // AC 1 — restore focus after the text paste lands. Same rationale as
   // above: Ctrl+V hits the document keydown listener which fires AFTER
