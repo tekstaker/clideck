@@ -1,8 +1,11 @@
-# SPEC — Device pairing so only linked devices can use the app
+# Phase 16 — Device pairing so only linked devices can use the app
+
+> **Numbering note (2026-06-05):** Originally queued as Phase 15 when this SPEC was first written earlier today. Renumbered to **Phase 16** on 2026-06-05 once the mobile-desktop-concurrent-access work was salvaged off the orphaned `feat/mobile-desktop-concurrent-access` branch into the queue as the new **Phase 15** (the natural prerequisite). This phase depends on Phase 15.
 
 **Status:** planned (not yet through `/gsd-discuss-phase` / `/gsd-plan-phase` — seeded from one pending todo 2026-06-05)
 **Owner:** Lance Keay
 **Date:** 2026-06-05
+**Depends on:** Phase 15 — `2026-06-02-mobile-desktop-concurrent-access`
 
 ## What this delivers
 
@@ -30,10 +33,12 @@ server-issued per-device token. After this phase ships:
 
 ## Why
 
-Phase 12 on the local `feat/mobile-desktop-concurrent-access` branch
-deliberately deferred app-level auth — the SPEC there was explicit:
-*"Access is VPN-only (private LAN over OpenVPN), explicitly NOT public —
-no app-level auth added in this phase."* That works while clideck is
+Phase 15 (`2026-06-02-mobile-desktop-concurrent-access`, salvaged 2026-06-05
+from the orphaned `feat/mobile-desktop-concurrent-access` branch where it
+was originally numbered Phase 12) deliberately deferred app-level auth —
+the SPEC there was explicit: *"Access is VPN-only (private LAN over
+OpenVPN), explicitly NOT public — no app-level auth added in this phase."*
+That works while clideck is
 reachable only on the LAN/VPN, but it means any device on the VPN can
 attach to any session. There is no record of which phones are "mine" vs.
 "a guest's spare tablet on the same VPN" and no way to revoke a phone
@@ -246,17 +251,21 @@ To be refined in `/gsd-spec-phase`. Initial sketch:
 
 ## Relation to shipped + planned work
 
+- **Phase 15 (`2026-06-02-mobile-desktop-concurrent-access`) —
+  the prerequisite.** Phase 15 ships mobile + desktop concurrent
+  access on shared sessions but explicitly defers app-level auth.
+  This phase (16) is the deferred half. Ordering matters: Phase 15
+  must land first so the surface this phase gates actually exists;
+  ideally they ship in close succession so the mobile surface is
+  gated on day one rather than briefly exposed.
 - **Phase 12 (origin/main, `2026-06-04-clipboard-image-paste`,
-  v1.31.15) — unrelated;** different "Phase 12" scope. No code
-  overlap.
+  v1.31.15) — unrelated;** the slot "Phase 12" on origin became
+  clipboard work in parallel with the mobile-desktop work being
+  built on the feature branch. No code overlap with this phase.
 - **Phase 14 (`2026-06-04-replayable-shell-sessions`, v1.31.17) —
-  unrelated;** rehydrates sessions, doesn't gate connections.
-- **Local branch `feat/mobile-desktop-concurrent-access` —
-  the practical motivator.** That branch makes phones a real first-
-  class surface; this phase is what makes the "any phone on the VPN"
-  posture safe enough for that. If the branch is salvaged into a
-  future phase, ordering matters: ideally pairing lands first so the
-  mobile surface ships gated rather than ungated-then-retrofitted.
+  orthogonal but worth noting:** rehydrated sessions across server
+  restart will only attach to a paired device under this phase,
+  which is the desired interaction.
 - **`clideck-docker-lance` (separate project) — orthogonal.**
   Handles deployment, reverse proxy, TLS, OpenVPN routing. This
   phase does not touch any of that.

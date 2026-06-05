@@ -124,22 +124,27 @@ to pin ambiguity before `/gsd-discuss-phase`.
 
 ## Promotion (2026-06-05)
 
-Promoted to **Phase 15 — 2026-06-05-device-pairing-for-mobile-access**.
+Originally promoted to **Phase 15**. Renumbered the same day to **Phase 16**
+when the orphaned `feat/mobile-desktop-concurrent-access` work was salvaged
+into the queue as the natural prerequisite (now Phase 15 —
+`2026-06-02-mobile-desktop-concurrent-access`).
+
 SPEC at `.planning/2026-06-05-device-pairing-for-mobile-access/SPEC.md` with
 the design space distilled into 9 acceptance criteria and 6 open decisions
 flagged for `/gsd-discuss-phase`. Status: planned, not yet through discuss
-or plan.
+or plan. **Depends on Phase 15.**
 
 ## Relation to shipped + planned work
 
+- **Phase 15 (`2026-06-02-mobile-desktop-concurrent-access`)** — the
+  prerequisite. Mobile + desktop concurrent access shipped on the feature
+  branch with app-level auth explicitly deferred to "a separate phase".
+  Phase 16 IS that separate phase. Ordering matters: Phase 15 lands first
+  so the mobile surface this phase gates actually exists.
 - **Phase 12 (origin/main, `2026-06-04-clipboard-image-paste`, v1.31.15)** —
   different "Phase 12" scope; this todo's reference to "Phase 12" predates
   origin's renumbering. No code overlap.
 - **Phase 14 (`2026-06-04-replayable-shell-sessions`, v1.31.17)** —
   rehydrates sessions across server restart; doesn't gate connections.
   Orthogonal but worth noting that a rehydrated session will only attach to
-  a paired device under Phase 15, which is the desired interaction.
-- **Local branch `feat/mobile-desktop-concurrent-access`** — the practical
-  motivator. That branch shipped concurrent mobile + desktop access without
-  app-level auth (its SPEC explicitly deferred it to "a separate phase").
-  Phase 15 IS that separate phase.
+  a paired device under Phase 16, which is the desired interaction.
