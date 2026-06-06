@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Pair this device — clideck</title>
+  <link rel="icon" type="image/png" href="/img/clideck-logo-icon.png">
+  <link rel="stylesheet" href="/tailwind.css">
+  <style>
+    /* Standalone pair view. Reuses the dashboard's compiled tailwind.css for
+       palette consistency but skips xterm.css (no terminal on this page).
+       The hand-rolled selectors below are kept minimal — anything Tailwind
+       can express via utility classes goes inline on the elements. */
+    html, body { background: #0f1115; color: #e2e8f0; min-height: 100vh; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    /* OTP input gets a fixed-width, spaced, centered look so the 6 chars
+       are easy to read on a phone screen even when the field is small. */
+    input#otp {
+      font-family: ui-monospace, "SF Mono", "Menlo", monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.25em;
+      text-align: center;
+    }
+    input { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; }
+    input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.25); }
+    button#pair-submit { background: #6366f1; color: #fff; }
+    button#pair-submit:hover:not([disabled]) { background: #4f46e5; }
+    button#pair-submit[disabled] { opacity: 0.6; cursor: not-allowed; }
+    #pair-error { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.3); }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center px-4 py-8">
+  <main class="w-full max-w-sm">
+    <div class="rounded-lg bg-slate-900/80 p-6 sm:p-8 shadow-xl border border-slate-800">
+      <h1 class="text-xl sm:text-2xl font-semibold mb-2">Pair this device</h1>
+      <p class="text-sm text-slate-400 mb-6 leading-relaxed">
+        Enter the 6-character code from your server's boot log
+        (<code class="text-slate-300">.clideck/bootstrap.otp</code>) or from an already-paired
+        device's Settings → Linked devices.
+      </p>
+      <!--
+        Form-wrap allows iOS to surface a "Go" key on the keyboard which
+        triggers submit. The submit handler in pair.js calls preventDefault
+        so no real form-POST navigation happens — the fetch path runs
+        instead. Per CLAUDE.md §13 we accept the OTP via the input value
+        only; it is never logged or echoed to the page after submission.
+      -->
+      <form id="pair-form" novalidate>
+        <label for="otp" class="block text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Pairing code
+        </label>
+        <input
+          id="otp"
+          name="otp"
+          type="text"
+          inputmode="latin"
+          autocomplete="off"
+          autocapitalize="characters"
+          autocorrect="off"
+          spellcheck="false"
+          maxlength="7"
+          placeholder="ABC-DEF"
+          pattern="[A-Z0-9\-]{3,7}"
+          autofocus
+          required
+          class="block w-full rounded-md px-3 py-3 text-lg mb-4"
+        >
+        <label for="label" class="block text-xs uppercase tracking-wide text-slate-400 mb-1">
+          Device label
+          <span class="text-slate-500 normal-case tracking-normal">(shown on the linked-devices list)</span>
+        </label>
+        <input
+          id="label"
+          name="label"
+          type="text"
+          autocomplete="off"
+          maxlength="32"
+          placeholder="Lance iPhone"
+          class="block w-full rounded-md px-3 py-2.5 text-base mb-6"
+        >
+        <button
+          id="pair-submit"
+          type="submit"
+          class="block w-full rounded-md px-3 py-3 text-base font-medium"
+        >
+          Pair this device
+        </button>
+      </form>
+      <div
+        id="pair-error"
+        role="alert"
+        aria-live="polite"
+        class="mt-4 px-3 py-2 rounded-md text-sm"
+        hidden
+      ></div>
+    </div>
+    <!--
+      iOS Safari ITP caveat (RESEARCH §5 A3 — ASSUMED): Safari may evict
+      localStorage after 7 days of non-use. Recommend adding clideck to the
+      home screen (Share → Add to Home Screen) — installed PWAs are treated
+      as a first-party app context and the 7-day cap is relaxed. If the
+      phone gets silently un-paired, just re-OTP from the desktop.
+    -->
+    <p class="text-xs text-slate-500 mt-4 text-center leading-relaxed">
+      Tip: add clideck to your home screen for the most reliable session.
+    </p>
+  </main>
+  <script type="module" src="/js/pair.js"></script>
+</body>
+</html>

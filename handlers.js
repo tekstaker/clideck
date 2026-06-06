@@ -695,6 +695,74 @@ function onConnection(ws) {
         ws.send(JSON.stringify({ type: 'pill.logs', id: msg.id, logs: plugins.getPillLogs(msg.id) }));
         break;
 
+      // Phase 16 — linked devices admin (CONTEXT D-06).
+      //
+      // device.list.get — settings-panel pull. We respond to the requester
+      // only (not a broadcast) — mirrors check-cwd / pill.getLogs which are
+      // also per-request reads. Live-ness is computed against
+      // sessions.clients via Pattern A's ws.deviceId tag, so a device with
+      // ANY currently-open ws (across multiple tabs / two browsers on the
+      // same phone) reports live:true.
+      //
+      // Per CLAUDE.md §13 — the payload omits token_hash. The opaque
+      // deviceId is the public identifier already used in the SPEC schema;
+      // never leak the hash to the client.
+      case 'device.list.get': {
+        const devices = require('./devices');
+        const live = new Set();
+        for (const c of sessions.clients) {
+          if (c.deviceId) live.add(c.deviceId);
+        }
+        const list = devices.list().map(d => ({
+          id: d.id,
+          label: d.label,
+          paired_at: d.paired_at,
+          last_seen: d.last_seen,
+          live: live.has(d.id),
+        }));
+        ws.send(JSON.stringify({ type: 'device.list', list }));
+        break;
+      }
+
+      // device.revoke — settings-panel action. Order is load-bearing:
+      //   1. devices.remove(deviceId)        — persistence first, so any
+      //                                        reconnect attempt after this
+      //                                        point fails the auth gate.
+      //   2. sessions.closeDevice(deviceId)  — kick live ws-es with 4401
+      //                                        'revoked' so the client
+      //                                        clears localStorage and
+      //                                        redirects to /pair.
+      //   3. sessions.broadcast(device.revoked) — surviving clients refresh
+      //                                            their Linked Devices
+      //                                            panel without that row.
+      //   4. ws.send(device.revoke.result)   — ack the requester with
+      //                                        closedCount for the toast.
+      //
+      // If the operator revokes their OWN device (the ws receiving this
+      // message), step 2 closes this very ws. The ack in step 4 is sent
+      // BEFORE the close lands in the iteration order — but even if the ws
+      // is already in readyState 3 by the time step 4 runs, the
+      // try/JSON.stringify path swallows the send-on-closed error cleanly
+      // (existing ws-send-guard precedent in app.js / state.js). The
+      // confirm modal in the client (Plan 16-07, D-06 own-device warning)
+      // is the UX guard against this; the server permits it.
+      case 'device.revoke': {
+        if (typeof msg.deviceId !== 'string' || msg.deviceId.length === 0) {
+          ws.send(JSON.stringify({ type: 'device.revoke.result', ok: false, error: 'no deviceId' }));
+          break;
+        }
+        const devices = require('./devices');
+        const removed = devices.remove(msg.deviceId);
+        if (!removed) {
+          ws.send(JSON.stringify({ type: 'device.revoke.result', ok: false, error: 'not found' }));
+          break;
+        }
+        const closedCount = sessions.closeDevice(msg.deviceId);
+        sessions.broadcast({ type: 'device.revoked', deviceId: msg.deviceId });
+        ws.send(JSON.stringify({ type: 'device.revoke.result', ok: true, deviceId: msg.deviceId, closedCount }));
+        break;
+      }
+
       case 'remote.status': {
         let installed = false;
         try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore', windowsHide: true }); installed = true; } catch {}

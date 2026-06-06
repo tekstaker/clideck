@@ -11,6 +11,16 @@ export const state = {
   activePill: null,
   transcriptCache: {},
   remoteVersion: null,
+  // Phase 16 — paired device IDs/labels list, populated by the `device.list`
+  // broadcast (handlers.js arm landed in 16-05; Settings panel render lands
+  // in 16-07). Each entry shape: { id, label, fingerprint, paired_at,
+  // last_seen, isThisDevice }.
+  linkedDevices: [],
+  // Phase 16 — this device's opaque public ID (NOT the token). Populated
+  // at app boot from localStorage.getItem('clideck.deviceId'); written by
+  // pair.js on a successful /pair/redeem. Used by the Settings panel to
+  // mark "This device" on the linked-devices row.
+  deviceId: null,
 };
 
 // Returns true if the message was handed to the socket, false if the socket

@@ -51,6 +51,7 @@ checkSelfUpdate().then(() => {
 
 const { onConnection } = require('./handlers');
 const sessions = require('./sessions');
+const authGate = require('./auth-gate');
 
 const transcript = require('./transcript');
 const telemetry = require('./telemetry-receiver');
@@ -58,6 +59,19 @@ const plugins = require('./plugin-loader');
 
 ensurePtyHelper();
 sessions.loadSessions();
+// Phase 16 — load paired-device registry and (if empty) mint a bootstrap OTP.
+// Placement is deliberate: AFTER sessions.loadSessions() so devices.load() has
+// a fully-initialised DATA_DIR, and BEFORE anything wires the wss / HTTP
+// surface so the auth gate has the device list available the moment the first
+// request arrives. bootstrapIfNeeded() is a no-op when devices.json already
+// contains paired entries; on a fresh install it prints a recovery OTP to
+// stdout and writes it to .clideck/bootstrap.otp (CLAUDE.md §13 bounded
+// exception, per CONTEXT D-02). See routes/pair.js for the redeem flow that
+// clears the bootstrap file on first successful pair.
+const devices = require('./devices');
+const pairOtp = require('./pair-otp');
+devices.load();
+pairOtp.bootstrapIfNeeded();
 // Rehydrate plain-shell tabs persisted via the replayable track (Phase 14).
 // Must run AFTER loadSessions (so the replayable[] array is populated) and
 // BEFORE the transcript initializes below (so the rehydrated live sessions
@@ -323,6 +337,19 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Phase 16 — device pairing HTTP routes. Must sit ABOVE the DEBUG POST
+  // catch-all below (which returns 200 '{}' for any unmatched POST and would
+  // otherwise swallow /pair/redeem + /pair/mint-otp). The inline `require()`
+  // mirrors the session-ask precedent at line ~247 above. `devices` and
+  // `pairOtp` are the module-scope singletons bound in the boot block above —
+  // captured by closure into this createServer callback.
+  if (req.method === 'POST' && req.url === '/pair/redeem') {
+    return require('./routes/pair').handleRedeemHttp(req, res, { devices, pairOtp });
+  }
+  if (req.method === 'POST' && req.url === '/pair/mint-otp') {
+    return require('./routes/pair').handleMintOtpHttp(req, res, { devices, pairOtp });
+  }
+
   // DEBUG: log any POST (agents might use /v1/traces, /v1/metrics, or other paths)
   if (req.method === 'POST') {
     // console.log(`OTLP: received POST ${req.url} (not handled)`);
@@ -337,6 +364,14 @@ const server = http.createServer((req, res) => {
       return res.end(readFileSync(pluginFile));
     }
     return res.writeHead(404).end();
+  }
+
+  // Phase 16 — GET /pair sits ABOVE the static fallthrough so the URL hits
+  // routes/pair.js (which serves public/pair.html with a defensive 503 if
+  // missing) rather than resolving as a bare `pair` static-asset request
+  // (which would 404 — public/pair.html has the `.html` extension).
+  if (req.method === 'GET' && req.url === '/pair') {
+    return require('./routes/pair').servePairHtml(req, res);
   }
 
   const filePath = ALIASES[req.url]
@@ -365,11 +400,41 @@ function isAllowedWsOrigin(origin, hostHeader) {
 }
 const wss = new WebSocketServer({
   server,
-  verifyClient: ({ req }) => {
-    return isAllowedWsOrigin(req.headers.origin, req.headers.host);
-  },
+  // Phase 16 — gate WS upgrades on the device-token in Sec-WebSocket-Protocol.
+  // Replaces the prior 1-arg verifyClient (which only ran the origin check)
+  // with the 2-arg async form so we can also reject with HTTP 401 'unpaired'
+  // BEFORE ws.completeUpgrade runs. Unpaired sockets are aborted at the HTTP
+  // layer — they NEVER reach handlers.js:267's sessions.clients.add(ws),
+  // so AC4's "no clients.count broadcast for unpaired" invariant is correct
+  // by construction (Phase 15 merge-safety, RESEARCH §7).
+  //
+  // The origin check is preserved verbatim and runs FIRST inside
+  // authGate.makeVerifyClient (RESEARCH §10.1) — non-browser clients with
+  // no Origin header still pass through (isAllowedWsOrigin returns true).
+  verifyClient: authGate.makeVerifyClient({ devices, isAllowedWsOrigin }),
+  // Echo back the sentinel subprotocol so the browser handshake completes
+  // for accepted tokens. ws will only emit 'connection' AFTER verifyClient
+  // calls callback(true), so we know any protocol negotiation reaching
+  // handleProtocols is from an authenticated request — but we still defend
+  // by checking the sentinel is in the offered set. Returning false omits
+  // the Sec-WebSocket-Protocol response header, which the browser treats
+  // as a handshake failure (event.code === 1006). The test suite asserts
+  // that we return the sentinel string, NOT the raw token (RESEARCH §1 R-1).
+  handleProtocols: (protocols) => protocols.has('clideck-device-token') ? 'clideck-device-token' : false,
 });
-wss.on('connection', onConnection);
+wss.on('connection', (ws, req) => {
+  // Phase 16 Pattern A (RESEARCH §4) — tag the ws with the authenticated
+  // device BEFORE handing to onConnection so revoke (sessions.closeDevice)
+  // can identify the matching ws by ws.deviceId. req.clideckDevice was
+  // stashed by authGate.makeVerifyClient — guaranteed present here because
+  // we only reach the 'connection' event when verifyClient called
+  // callback(true). Per CLAUDE.md §13 the raw token is NOT carried on the
+  // ws; only the opaque device id + the sha256:<hex> hash are kept.
+  ws.deviceId = req.clideckDevice.id;
+  ws.deviceTokenHash = req.clideckDevice.token_hash;
+  devices.touchLastSeen(req.clideckDevice.id);
+  return onConnection(ws);
+});
 // Without this listener, the WebSocketServer rethrows any error emitted by
 // the underlying http server — including EADDRINUSE during listen — which
 // would crash the process before tryListen's retry loop can fire. Logging
