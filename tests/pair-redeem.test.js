@@ -261,7 +261,11 @@ describe('POST /pair/redeem — handler contract (AC2, AC8, AC9)', () => {
     expect(persisted.token_hash).not.toContain(rawToken);
   });
 
-  it('bootstrap OTP redeem deletes the .clideck/bootstrap.otp file', async () => {
+  // CHANGED 2026-06-09: the host/bootstrap code is REUSABLE — redeeming it
+  // must NOT delete .clideck/bootstrap.otp, so Lance can pair additional
+  // devices from the same code printed in his terminal. (Previously the file
+  // was deleted on first redeem to close the single-use recovery path.)
+  it('bootstrap OTP redeem KEEPS the .clideck/bootstrap.otp file (reusable host code)', async () => {
     const { devices, pairOtp, pairRoute } = freshPair();
     devices.load();
     // Seed a bootstrap OTP file + a bootstrap-flagged OTP in the store.
@@ -273,6 +277,6 @@ describe('POST /pair/redeem — handler contract (AC2, AC8, AC9)', () => {
       { otp, label: 'First device' },
       { devices, pairOtp }
     );
-    expect(existsSync(devices.BOOTSTRAP_PATH)).toBe(false);
+    expect(existsSync(devices.BOOTSTRAP_PATH)).toBe(true);
   });
 });

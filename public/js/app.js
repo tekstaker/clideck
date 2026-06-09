@@ -120,6 +120,15 @@ function startHeartbeat() {
   }, HEARTBEAT_MS);
 }
 
+// Localhost-trust (2026-06-09). The owner browsing from the host machine
+// should never be forced through the pair screen. We detect a loopback
+// origin client-side and connect tokenless; the server's verifyClient
+// trusts the loopback peer (auth-gate.js). Remote origins are unaffected.
+function isLoopbackHost() {
+  const h = location.hostname;
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || /^127\./.test(h);
+}
+
 function connect() {
   // Phase 16 — boot-time localStorage gate (D-03 soft client-side check).
   // If no device token is stored, redirect to /pair for OTP entry. The WS
@@ -128,8 +137,12 @@ function connect() {
   // attempt for a fresh browser. The server-side hard reject (16-05
   // verifyClient) is the second layer of defence; this is the cheap
   // client-side first layer that avoids the WS round-trip entirely.
+  //
+  // EXCEPTION (2026-06-09 localhost-trust): on a loopback origin we skip the
+  // redirect and connect tokenless. The owner at the machine is trusted by
+  // locality, so the pair screen never appears for local browser use.
   const deviceToken = localStorage.getItem('clideck.deviceToken');
-  if (!deviceToken) {
+  if (!deviceToken && !isLoopbackHost()) {
     window.location.href = '/pair';
     return;
   }
@@ -139,7 +152,15 @@ function connect() {
   // on the upgrade request; the server's handleProtocols (16-05) echoes
   // back just the sentinel. Both array entries must be RFC 6455 token-chars
   // (verified for base64url tokens at RESEARCH §1).
-  state.ws = new WebSocket(`${wsProtocol}//${location.host}`, ['clideck-device-token', deviceToken]);
+  //
+  // With a token (even on loopback) we still send it, so a paired local
+  // browser is attributed to its real device and stays revocable. Tokenless
+  // loopback offers the sentinel alone; handleProtocols echoes it so the
+  // handshake completes and verifyClient accepts via loopback trust.
+  const protocols = deviceToken
+    ? ['clideck-device-token', deviceToken]
+    : ['clideck-device-token'];
+  state.ws = new WebSocket(`${wsProtocol}//${location.host}`, protocols);
 
   state.ws.onopen = () => {
     // Phase 16 — flag the handshake as having completed at least once for

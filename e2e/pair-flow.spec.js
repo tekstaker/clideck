@@ -86,28 +86,32 @@ async function waitForAppReady(page) {
 // env block sets — but the runner process doesn't see it. So we ALSO
 // fall back to scanning for any '.clideck' under common tmpdir prefixes
 // if the canonical path is empty.
+const { e2eDataDir } = require('./paths');
 function dataDirFromEnv() {
-  if (process.env.CLIDECK_DATA_DIR) return process.env.CLIDECK_DATA_DIR;
-  const home = process.env.HOME || process.env.USERPROFILE;
-  return join(home, '.clideck');
+  // Deterministic shared path (e2e/paths.js) — identical in the server's
+  // process and this worker, so bootstrap.otp is read where the server wrote
+  // it. CLIDECK_DATA_DIR override wins if a real shell sets it. (2026-06-09)
+  return process.env.CLIDECK_DATA_DIR || e2eDataDir();
 }
 
 test.describe('pair flow — bootstrap + dashboard reconnect (AC1, AC2, AC3, AC7)', () => {
   let capturedToken = null;
 
-  test('AC1 — empty localStorage redirects to /pair with no WS connection', async ({ page }) => {
+  // CHANGED 2026-06-09 (localhost-trust): the e2e server runs on loopback,
+  // and the owner at the machine is now trusted by locality — a fresh local
+  // browser must NOT be bounced to /pair. It connects tokenless and loads the
+  // dashboard directly. (The remote/untrusted "→ /pair" gate is covered by
+  // the verifyClient unit tests in tests/loopback-trust.test.js, which can
+  // synthesise a non-loopback peer that Playwright-on-localhost cannot.)
+  test('AC1 — empty localStorage on loopback loads the dashboard directly (no /pair redirect)', async ({ page }) => {
     await installWsRecorder(page);
     await page.goto('/');
-    // Expect navigation to /pair (either server-side redirect or client-side
-    // window.location.href = '/pair' from app.js boot check).
-    await expect(page).toHaveURL(/\/pair$/, { timeout: 5_000 });
-    // No WS opened during the redirect.
-    await new Promise(r => setTimeout(r, 1000));
-    const wsExists = await page.evaluate(() =>
-      typeof /** @type {any} */ (window).__ws !== 'undefined' &&
-      /** @type {any} */ (window).__ws !== null
-    );
-    expect(wsExists).toBe(false);
+    // Stays on /, does NOT redirect to /pair.
+    await expect(page).not.toHaveURL(/\/pair$/);
+    // Tokenless loopback connection comes up and the app hydrates.
+    await waitForAppReady(page);
+    const hasToken = await page.evaluate(() => localStorage.getItem('clideck.deviceToken'));
+    expect(hasToken).toBeNull(); // connected with no paired token — pure loopback trust
   });
 
   test('AC2 + AC7 — bootstrap OTP end-to-end: read bootstrap.otp → fill /pair form → submit → dashboard with live WS', async ({ page }) => {
