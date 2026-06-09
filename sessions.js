@@ -414,7 +414,17 @@ function input(msg) {
     broadcast({ type: 'session.status', id: msg.id, working: false, source: 'esc' });
   }
 }
-function resize(msg) { sessions.get(msg.id)?.pty.resize(msg.cols, msg.rows); }
+function resize(_msg) {
+  // PTY size is locked at session creation time (Phase 15 R2 / D-04).
+  // The `resize` message type stays accepted (older clients, third-party
+  // clients, and Phase 9's `display-sizing.js` re-fit routine still send
+  // `{type:'resize', id, cols, rows}` on viewport changes) but is a no-op
+  // server-side. Per-client viewport changes no longer reshape the agent's
+  // terminal under another client — clients visually scale or scroll the
+  // grid horizontally instead. The cols/rows passed at `spawnSession` time
+  // (sessions.js:85) are the only value the PTY ever sees. See
+  // `.planning/2026-06-02-mobile-desktop-concurrent-access/` for context.
+}
 
 function rename(msg) {
   const s = sessions.get(msg.id);

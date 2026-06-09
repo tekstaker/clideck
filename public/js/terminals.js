@@ -50,6 +50,24 @@ function isLightBg(themeId) {
 //
 // Always exported — callers in other modules (toast.js, confirm.js) import
 // this rather than reimplementing the guard.
+// Phase 15 R5 — flip `state.otherClientsConnected` from the server-wide
+// `clients.count` broadcast, then toggle `.hidden` on every existing
+// `.other-client-indicator` span in the DOM. Idempotent and safe to call
+// with no spans rendered yet (cold-boot path). Per CONTEXT.md D-10/D-11
+// the count is server-wide; a single shared flag drives every row.
+//
+// G9 mitigation pair: row templates (addTerminal + buildResumableRow) read
+// `state.otherClientsConnected` at innerHTML-build time so rows added AFTER
+// the flag is true render the indicator already visible without a re-call.
+// Existing rows that pre-date a flag change get their `.hidden` flipped by
+// this DOM walk on the next dispatch from app.js (case 'clients.count').
+export function updateOtherClientIndicator(count) {
+  state.otherClientsConnected = count > 1;
+  document.querySelectorAll('.other-client-indicator').forEach(el => {
+    el.classList.toggle('hidden', !state.otherClientsConnected);
+  });
+}
+
 export function refocusActiveTerm(idOverride) {
   const id = idOverride ?? state.active;
   if (!id) return;
@@ -719,6 +737,7 @@ export function addTerminal(id, name, themeId, commandId, projectId, muted, last
     <div class="flex-1 min-w-0 pointer-events-none">
       <div class="flex items-baseline gap-2">
         <span class="name flex-1 font-semibold text-[13px] text-slate-200 truncate pointer-events-auto cursor-default">${esc(name)}</span>
+        <span class="other-client-indicator${state.otherClientsConnected ? '' : ' hidden'} flex-shrink-0 text-amber-400" title="Another client is connected" aria-label="Another client is connected"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="6" cy="8" r="3.5"/><circle cx="10" cy="8" r="3.5"/></svg></span>
         <span class="session-time recent text-[11px] flex-shrink-0">${formatTime(Date.now())}</span>
       </div>
       <div class="flex items-center gap-1 mt-0.5">
@@ -1547,6 +1566,7 @@ function buildResumableRow(s) {
     <div class="flex-1 min-w-0">
       <div class="flex items-baseline gap-2">
         <span class="resumable-name flex-1 font-semibold text-[13px] text-slate-400 truncate">${esc(s.name)}</span>
+        <span class="other-client-indicator${state.otherClientsConnected ? '' : ' hidden'} flex-shrink-0 text-amber-400" title="Another client is connected" aria-label="Another client is connected"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="6" cy="8" r="3.5"/><circle cx="10" cy="8" r="3.5"/></svg></span>
         <span class="text-[11px] text-slate-600 flex-shrink-0">${time}</span>
       </div>
       <div class="flex items-center gap-1 mt-0.5">

@@ -43,11 +43,6 @@ for (const p of presets) {
   }
 }
 
-// Check for clideck-remote updates (cached, once per hour)
-let remoteUpdateCache = null;
-let remoteUpdateCheckedAt = 0;
-const REMOTE_UPDATE_INTERVAL = 3600000;
-
 function compareVersions(a, b) {
   const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
   const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
@@ -68,33 +63,6 @@ function getInstalledVersion(bin) {
   try { return parseVersion(execFileSync(bin, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
   try { return parseVersion(execFileSync(bin, ['-v'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })); } catch {}
   return '';
-}
-
-function checkRemoteUpdate(ws) {
-  const now = Date.now();
-  if (remoteUpdateCache && now - remoteUpdateCheckedAt < REMOTE_UPDATE_INTERVAL) {
-    ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
-    return;
-  }
-  const shellOpt = process.platform === 'win32';
-  require('child_process').execFile('npm', ['list', '-g', 'clideck-remote', '--json', '--depth=0'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err, stdout) => {
-    let installed;
-    try { installed = JSON.parse(stdout).dependencies['clideck-remote'].version; }
-    catch {
-      ws.send(JSON.stringify({ type: 'remote.update', available: false, checked: false }));
-      return;
-    }
-    require('child_process').execFile('npm', ['view', 'clideck-remote', 'version'], { shell: shellOpt, windowsHide: true, timeout: 10000 }, (err2, stdout2) => {
-      if (err2) {
-        ws.send(JSON.stringify({ type: 'remote.update', installed, available: false, checked: false }));
-        return;
-      }
-      const latest = stdout2.trim();
-      remoteUpdateCache = { installed, latest, available: compareVersions(latest, installed) > 0 };
-      remoteUpdateCheckedAt = now;
-      ws.send(JSON.stringify({ type: 'remote.update', checked: true, ...remoteUpdateCache }));
-    });
-  });
 }
 
 // Check which agent binaries are available on PATH
@@ -259,12 +227,15 @@ function overlayVersionInfo() {
   };
 }
 
-function remoteCliEnv() {
-  return { ...process.env, CLIDECK_PORT: String(PORT) };
-}
-
 function onConnection(ws) {
   sessions.clients.add(ws);
+  // Phase 15 R5 / D-08+D-09: server-wide "other client connected" presence.
+  // `sessions.broadcast` iterates the `clients` Set with a `readyState === 1`
+  // guard (sessions.js:53-74), so this single fan-out reaches the just-added
+  // client too — no separate per-client ws.send needed in the initial-payload
+  // block. Fires AFTER `sessions.clients.add(ws)` so `count` already includes
+  // the new connection.
+  sessions.broadcast({ type: 'clients.count', count: sessions.clients.size });
 
   // Heartbeat: detect dead TCP sockets (NAT/proxy/laptop-sleep) so the server
   // doesn't keep streaming output into the void and so the client gets a
@@ -763,64 +734,22 @@ function onConnection(ws) {
         break;
       }
 
-      case 'remote.status': {
-        let installed = false;
-        try { execFileSync(whichCmd, ['clideck-remote'], { stdio: 'ignore', windowsHide: true }); installed = true; } catch {}
-        if (!installed) { ws.send(JSON.stringify({ type: 'remote.status', installed: false })); break; }
-        require('child_process').execFile('clideck-remote', ['status', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
-          if (err) { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); return; }
-          try { ws.send(JSON.stringify({ type: 'remote.status', installed: true, ...JSON.parse(stdout) })); }
-          catch { ws.send(JSON.stringify({ type: 'remote.status', installed: true })); }
-        });
-        checkRemoteUpdate(ws);
-        break;
-      }
-
-      case 'remote.pair': {
-        require('child_process').execFile('clideck-remote', ['pair', '--json'], { timeout: 15000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err, stdout) => {
-          if (err) { ws.send(JSON.stringify({ type: 'remote.error', error: err.message })); return; }
-          try { ws.send(JSON.stringify({ type: 'remote.paired', ...JSON.parse(stdout) })); }
-          catch { ws.send(JSON.stringify({ type: 'remote.error', error: 'Invalid response from clideck-remote' })); }
-        });
-        break;
-      }
-
-      case 'remote.unpair': {
-        require('child_process').execFile('clideck-remote', ['unpair', '--json'], { timeout: 5000, shell: process.platform === 'win32', windowsHide: true, env: remoteCliEnv() }, (err) => {
-          if (err) {
-            ws.send(JSON.stringify({ type: 'remote.error', error: err.message }));
-          } else {
-            sessions.broadcast({ type: 'remote.unpaired' });
-          }
-        });
-        break;
-      }
-
-      case 'remote.getHistory': {
-        ws.send(JSON.stringify({ type: 'remote.history', id: msg.id, turns: transcript.getTurns(msg.id, 20, 'end') }));
-        break;
-      }
-
-      case 'remote.install': {
-        const proc = require('child_process').spawn('npm', ['install', '-g', 'clideck-remote'], {
-          shell: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-        });
-        proc.stdout.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
-        proc.stderr.on('data', d => ws.send(JSON.stringify({ type: 'remote.install.progress', text: d.toString() })));
-        proc.on('close', code => {
-          remoteUpdateCache = null;
-          ws.send(JSON.stringify({ type: 'remote.install.done', success: code === 0 }));
-        });
-        break;
-      }
-
       default:
         if (msg.type?.startsWith('plugin.')) plugins.handleMessage(msg);
         break;
     }
   });
 
-  ws.on('close', () => sessions.clients.delete(ws));
+  // Phase 15 R5 / D-08+D-09: presence-broadcast on disconnect. Delete FIRST so
+  // the `count` in the broadcast reflects the post-disconnect state seen by
+  // every surviving client. The heartbeat-cleanup ws.on('close', ...) above
+  // is a separate registration — both fire in registration order (ws/EE
+  // semantics, per RESEARCH.md G7). `sessions.broadcast` filters by
+  // readyState=1 so the just-departed ws is skipped automatically.
+  ws.on('close', () => {
+    sessions.clients.delete(ws);
+    sessions.broadcast({ type: 'clients.count', count: sessions.clients.size });
+  });
 }
 
 // Deterministic telemetry config writers per agent — no AI, no YOLO
