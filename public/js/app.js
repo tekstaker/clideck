@@ -1,6 +1,6 @@
 import { state, send } from './state.js';
 import { esc, binName, resolveIconPath } from './utils.js';
-import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, setHasToken, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog, applyFontSize, clampFontSize, FONT_SIZE_DEFAULT, FONT_SIZE_MIN, FONT_SIZE_MAX } from './terminals.js';
+import { addTerminal, removeTerminal, select, startRename, startResumableRename, startProjectRename, setSessionTheme, openMenu, closeMenu, setStatus, updateMuteIndicator, updatePreview, markUnread, applyFilter, setTab, renderResumable, regroupSessions, reorderTerms, setHasToken, toggleProjectCollapse, setSessionProject, estimateSize, restartComplete, positionMenu, addPill, updatePill, removePill, appendPillLog, setPillLogs, closePillLog, applyFontSize, clampFontSize, updateOtherClientIndicator, FONT_SIZE_DEFAULT, FONT_SIZE_MIN, FONT_SIZE_MAX } from './terminals.js';
 import { renderSettings, updateVersionFooter, setFontSize } from './settings.js';
 import { openCreator, closeCreator, refreshCreator } from './creator.js';
 import { handleDirsResponse, handleMkdirResponse, openFolderPicker } from './folder-picker.js';
@@ -266,6 +266,14 @@ function connect() {
           showToast(`Paused "${name}" — available under Previous Sessions.`, { type: 'info', duration: 2500 });
         }
         removeTerminal(msg.id);
+        break;
+      case 'clients.count':
+        // Phase 15 R5 — server-wide WS client count broadcast (handlers.js,
+        // landed in Plan 03 on connect + close). updateOtherClientIndicator
+        // flips state.otherClientsConnected and toggles `.hidden` on every
+        // .other-client-indicator span (active + resumable rows). No
+        // per-session bookkeeping (CONTEXT.md D-08/D-10/D-11).
+        updateOtherClientIndicator(msg.count);
         break;
       case 'session.token':
         // Server captured a session token for this id. Flip the entry's
