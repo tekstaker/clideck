@@ -3,8 +3,8 @@
 // Pure in-memory module. NO HTTP, NO WebSocket, NO persistence. The OTP store
 // is a `Map<otp, { expiresAt, used, isBootstrap }>` that lives only for the
 // life of the Node process. On restart all user-minted OTPs are gone (their
-// 5-minute TTL bounds the loss to ≤5 min anyway), and `bootstrapIfNeeded()`
-// will re-mint a bootstrap OTP if `devices.json` is still empty.
+// 5-minute TTL bounds the loss to ≤5 min anyway), and `announcePairCode()`
+// re-mints a fresh reusable host pairing code at every boot.
 //
 // Why a Map and not a file: the 5-min TTL + single-use semantics combined
 // with the very small number of expected pairing operations (Lance + a
@@ -12,15 +12,16 @@
 // thing. Persistence would add risk (a stale OTP surviving a restart could
 // be replayed) for zero benefit (user just re-mints from the Settings UI).
 //
-// Wiring lives in `server.js` (Plan 16-04):
-//   - At boot, after `devices.load()`, call `bootstrapIfNeeded()`. If the
-//     server has no paired devices, this prints a recovery OTP to stdout
-//     and writes it to `.clideck/bootstrap.otp` so the owner can pair the
-//     first device with nothing but shell access.
-//   - The `/pair/redeem` route calls `redeemOtp(otp)`; on `{ ok: true, isBootstrap: true }`
-//     it then calls `devices.clearBootstrap()` to delete the recovery file.
+// Wiring lives in `server.js` (Plan 16-04; localhost-trust revision 2026-06-09):
+//   - At boot, after `devices.load()`, call `announcePairCode()`. This ALWAYS
+//     prints a reusable host pairing code to stdout and writes it to
+//     `.clideck/bootstrap.otp` — whether or not devices are already paired —
+//     so the owner can always grab a code (from the terminal, or via
+//     `docker exec … cat`) to pair another phone/tablet.
+//   - The `/pair/redeem` route calls `redeemOtp(otp)`. The host/bootstrap
+//     code is reusable (not consumed) and the file is NOT cleared on redeem.
 //   - The `/pair/mint-otp` route (owner-authenticated) calls `mintOtp()`
-//     and returns the OTP + expiresAt to the Settings panel.
+//     and returns the OTP + expiresAt to the Settings panel (single-use).
 //
 // ─── Alphabet pin (RESEARCH Q-1) ────────────────────────────────────────────
 // `OTP_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'` — exactly 31 chars.
@@ -50,14 +51,14 @@
 // suite completes. (We learned this the hard way in Phase 16 wave 0.)
 //
 // ─── Per CLAUDE.md §13: deliberate, bounded secret-in-logs exception ───────
-// `bootstrapIfNeeded()` prints the bootstrap OTP to stdout. This is the
-// ONLY intentional secret-in-logs in Phase 16 and is called out explicitly
-// in CONTEXT D-02. Rationale: the only way to bootstrap from a fresh install
-// (no paired device, no UI access yet) is via a value the owner can read
-// from a place they already have access to — the server's stdout. The
-// alternative (require a paired device to mint the first OTP) is a
-// chicken-and-egg problem. Bounds: single-use, 24h TTL, visible only to
-// whoever has shell on the server (which is Lance, by definition).
+// `announcePairCode()` prints the host pairing code to stdout. This is the
+// ONLY intentional secret-in-logs in the pairing feature and is called out
+// in CONTEXT D-02. Rationale: the owner needs a value they can read from a
+// place they already have access to — the server's stdout (or the
+// .clideck/bootstrap.otp file via `docker exec … cat`). Bounds: 24h TTL,
+// visible only to whoever has shell on the host (which is Lance, by
+// definition). REUSABLE by design (2026-06-09) so one code pairs several
+// devices; Lance has explicitly waived the host-visibility concern.
 
 const crypto = require('crypto');
 const { writeFileSync } = require('fs');
@@ -109,12 +110,14 @@ function redeemOtp(otp) {
     // for the caller debugging "why didn't my OTP work?".
     return { ok: false, error: 'expired' };
   }
-  // INTENTIONAL: mark used but do NOT delete. The Wave-0 spec asserts a
-  // second call to redeemOtp(<same otp>) returns { ok: false, error: 'used' };
-  // deleting on success would degrade that to 'invalid'. The sweep removes
-  // used+expired entries after the grace window — memory is bounded by
-  // (TTL + grace), not by deletion-on-redeem.
-  entry.used = true;
+  // Two-tier consumption (CHANGED 2026-06-09):
+  //   - USER-minted OTPs (Settings → Add device) stay SINGLE-USE: mark used
+  //     so a second redeem returns { ok: false, error: 'used' } (AC9).
+  //   - The HOST/bootstrap code is REUSABLE: Lance pairs multiple devices
+  //     from the one code printed in his terminal, so we do NOT consume it.
+  //     Bounded by its 24h TTL; visible only to whoever has the host shell
+  //     (explicit owner waiver). See announcePairCode() header.
+  if (!entry.isBootstrap) entry.used = true;
   return { ok: true, isBootstrap: entry.isBootstrap };
 }
 
@@ -151,19 +154,32 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-function bootstrapIfNeeded() {
-  if (!devices.isEmpty()) return;
+// announcePairCode() — print + persist a reusable host pairing code at boot.
+//
+// CHANGED 2026-06-09 (was bootstrapIfNeeded):
+//   - ALWAYS runs, whether or not devices.json already has paired devices.
+//     Previously it short-circuited once the first device paired, which left
+//     Lance unable to grab a code from his terminal to pair ADDITIONAL
+//     devices. Now the code is always visible — copy it from the terminal (or
+//     `cat .clideck/bootstrap.otp` after `docker exec`) and paste into /pair
+//     on any device.
+//   - The code is REUSABLE (redeemOtp does not consume isBootstrap entries),
+//     so one printed code pairs as many devices as needed within its 24h TTL.
+//
+// Per CLAUDE.md §13 — this is the ONE deliberate secret-in-logs exception in
+// the pairing feature, and Lance has explicitly waived the host-visibility
+// concern ("not worried about a security issue of showing the code on the
+// machine where this is running"). Remote devices still need VPN + the code;
+// loopback devices are trusted by locality and don't need it at all.
+function announcePairCode() {
   const { otp } = mintOtp({ ttlSeconds: 86400, isBootstrap: true });
   writeFileSync(devices.BOOTSTRAP_PATH, otp + '\n');
-  // Intentional: bootstrap recovery path. The OTP is single-use, short-lived,
-  // and visible only to whoever has shell access to the server. Per Phase 16
-  // SPEC + CONTEXT D-02. This is the CLAUDE.md §13 deliberate exception.
   const hyphenated = otp.slice(0, 3) + '-' + otp.slice(3);
   console.log(
-    `\n\x1b[38;5;105m  [clideck] bootstrap pair code: ${hyphenated}\x1b[0m\n` +
-    `\x1b[38;5;245m  Paste into /pair on the first device.\x1b[0m\n` +
-    `\x1b[38;5;245m  Also written to ${devices.BOOTSTRAP_PATH}\x1b[0m\n`
+    `\n\x1b[38;5;105m  [clideck] pair code: ${hyphenated}\x1b[0m  \x1b[38;5;245m(reusable · 24h)\x1b[0m\n` +
+    `\x1b[38;5;245m  Paste into /pair on any phone/tablet. Local browser needs no code.\x1b[0m\n` +
+    `\x1b[38;5;245m  Also at ${devices.BOOTSTRAP_PATH}\x1b[0m\n`
   );
 }
 
-module.exports = { mintOtp, redeemOtp, bootstrapIfNeeded, OTP_ALPHABET };
+module.exports = { mintOtp, redeemOtp, announcePairCode, OTP_ALPHABET };

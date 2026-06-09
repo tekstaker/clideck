@@ -63,15 +63,20 @@ sessions.loadSessions();
 // Placement is deliberate: AFTER sessions.loadSessions() so devices.load() has
 // a fully-initialised DATA_DIR, and BEFORE anything wires the wss / HTTP
 // surface so the auth gate has the device list available the moment the first
-// request arrives. bootstrapIfNeeded() is a no-op when devices.json already
-// contains paired entries; on a fresh install it prints a recovery OTP to
-// stdout and writes it to .clideck/bootstrap.otp (CLAUDE.md §13 bounded
-// exception, per CONTEXT D-02). See routes/pair.js for the redeem flow that
-// clears the bootstrap file on first successful pair.
+// request arrives. announcePairCode() ALWAYS prints a reusable host pairing
+// code to stdout and writes it to .clideck/bootstrap.otp — whether or not
+// devices are already paired — so the owner can always grab a code to pair
+// another device (CLAUDE.md §13 bounded exception, per CONTEXT D-02 + the
+// 2026-06-09 localhost-trust revision). See routes/pair.js for the redeem flow.
 const devices = require('./devices');
 const pairOtp = require('./pair-otp');
 devices.load();
-pairOtp.bootstrapIfNeeded();
+pairOtp.announcePairCode();
+// Localhost-trust (2026-06-09): the owner at the machine is never forced
+// through the pair gate. Default ON; set CLIDECK_REQUIRE_PAIRING=1 to enforce
+// pairing even on loopback (the verifyClient gate then rejects tokenless
+// loopback connections). See auth-gate.js for the trust rationale.
+const TRUST_LOOPBACK = !process.env.CLIDECK_REQUIRE_PAIRING;
 // Rehydrate plain-shell tabs persisted via the replayable track (Phase 14).
 // Must run AFTER loadSessions (so the replayable[] array is populated) and
 // BEFORE the transcript initializes below (so the rehydrated live sessions
@@ -411,7 +416,7 @@ const wss = new WebSocketServer({
   // The origin check is preserved verbatim and runs FIRST inside
   // authGate.makeVerifyClient (RESEARCH §10.1) — non-browser clients with
   // no Origin header still pass through (isAllowedWsOrigin returns true).
-  verifyClient: authGate.makeVerifyClient({ devices, isAllowedWsOrigin }),
+  verifyClient: authGate.makeVerifyClient({ devices, isAllowedWsOrigin, trustLoopback: TRUST_LOOPBACK }),
   // Echo back the sentinel subprotocol so the browser handshake completes
   // for accepted tokens. ws will only emit 'connection' AFTER verifyClient
   // calls callback(true), so we know any protocol negotiation reaching

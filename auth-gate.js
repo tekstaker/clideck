@@ -45,6 +45,46 @@ function readDeviceToken(req) {
   return parts.find(p => p !== 'clideck-device-token') || null;
 }
 
+// ─── Localhost trust (2026-06-09) ──────────────────────────────────────────
+// The owner sitting at the machine should never be forced through the
+// device-pairing gate. Phase 16 gated EVERY ws upgrade on a paired token,
+// which regressed Lance's daily local browser use (the pair screen popped
+// up demanding an OTP). When a request originates from the loopback
+// interface we treat it as the trusted owner.
+//
+// Threat note: this is a TRUST decision keyed on the *peer address*, not on
+// the Origin header — so the origin check still runs FIRST (a malicious
+// cross-origin page that the user's browser loads would carry a non-matching
+// Origin and be rejected before we ever look at loopback). What loopback
+// trust grants is: a same-origin browser on the host can connect WITHOUT a
+// paired token. Per Lance's explicit waiver, code visible on the host shell
+// is acceptable; the security boundary for remote devices (VPN + pairing)
+// is unchanged.
+function isLoopbackAddress(addr) {
+  if (typeof addr !== 'string' || !addr) return false;
+  if (addr === '::1' || addr === '::ffff:127.0.0.1') return true;
+  // 127.0.0.0/8 — any 127.x.x.x is loopback. Also tolerate the IPv4-mapped
+  // form '::ffff:127.x.x.x' that some stacks report.
+  return /^127\./.test(addr) || /^::ffff:127\./.test(addr);
+}
+
+function isLoopbackReq(req) {
+  const sock = req && (req.socket || req.connection);
+  return isLoopbackAddress(sock && sock.remoteAddress);
+}
+
+// Synthetic device stashed on req for a loopback-trusted (tokenless)
+// connection. server.js's `wss.on('connection')` reads req.clideckDevice to
+// tag ws.deviceId / ws.deviceTokenHash. The id 'local' never collides with a
+// real 'dev_…' id, so devices.touchLastSeen('local') is a harmless no-op and
+// a device.revoke can never accidentally target the owner's local socket.
+const LOOPBACK_DEVICE = Object.freeze({
+  id: 'local',
+  token_hash: 'loopback',
+  label: 'localhost',
+  loopback: true,
+});
+
 // makeVerifyClient({ devices, isAllowedWsOrigin }) — factory returning
 // a 2-arg `verifyClient` closure of shape `({ req }, callback) => {...}`.
 //
@@ -66,29 +106,59 @@ function readDeviceToken(req) {
 //   4. Stash + accept — req.clideckDevice is read by the (ws, req)
 //      wrapper in server.js to tag ws.deviceId / ws.deviceTokenHash
 //      (Pattern A from RESEARCH §4).
-function makeVerifyClient({ devices, isAllowedWsOrigin }) {
+// Ladder (token-first, loopback-fallback):
+//   1. Origin check               → 403 if disallowed (UNCHANGED, runs first)
+//   2. Valid device token?        → accept as the REAL device. This runs
+//      BEFORE the loopback fallback on purpose: a loopback browser that DID
+//      pair (carries a token) must be attributed to its real device so a
+//      device.revoke still targets it by id — loopback trust must not mask a
+//      paired token's identity.
+//   3. Tokenless + loopback + trustLoopback → accept as LOOPBACK_DEVICE.
+//   4. else                       → 401 'unpaired'.
+//
+// `trustLoopback` defaults true (localhost-trust feature). Set false to
+// enforce pairing even on loopback. `isLoopback` is injectable for tests;
+// it defaults to the real peer-address predicate.
+function makeVerifyClient({ devices, isAllowedWsOrigin, trustLoopback = true, isLoopback = isLoopbackReq }) {
   return function verifyClient({ req }, callback) {
     // 1. Origin check — runs first per AC4 + RESEARCH §10.1. Preserved
     //    verbatim from the pre-Phase-16 verifyClient at server.js:402.
+    //    Loopback trust does NOT bypass this: a malicious cross-origin page
+    //    the owner's browser loads is still rejected here before we consider
+    //    the peer address.
     if (!isAllowedWsOrigin(req.headers.origin, req.headers.host)) {
       return callback(false, 403, 'origin not allowed');
     }
-    // 2. Token extraction — null on missing header or sentinel-only.
+    // 2. Token path — if a valid token is present, attribute to the real
+    //    device regardless of loopback (so revoke-by-id still works).
     const rawToken = readDeviceToken(req);
-    if (!rawToken) {
-      return callback(false, 401, 'unpaired');
+    if (rawToken) {
+      const device = devices.findByToken(rawToken);
+      if (device) {
+        // Stash on req — the (ws, req) wrapper in server.js reads
+        // req.clideckDevice to tag ws.deviceId + ws.deviceTokenHash
+        // (Pattern A — used by sessions.closeDevice during revoke).
+        req.clideckDevice = device;
+        return callback(true);
+      }
+      // An UNKNOWN token from a non-loopback peer is a hard reject. From a
+      // loopback peer we fall through to loopback trust below (a stale token
+      // shouldn't lock the owner out of their own machine).
     }
-    // 3. Device lookup — null if no device's token_hash matches.
-    const device = devices.findByToken(rawToken);
-    if (!device) {
-      return callback(false, 401, 'unpaired');
+    // 3. Loopback fallback — owner at the machine, no (valid) token.
+    if (trustLoopback && isLoopback(req)) {
+      req.clideckDevice = LOOPBACK_DEVICE;
+      return callback(true);
     }
-    // 4. Stash on req — the (ws, req) wrapper in server.js reads
-    //    req.clideckDevice to tag ws.deviceId + ws.deviceTokenHash
-    //    (Pattern A — used by sessions.closeDevice during revoke).
-    req.clideckDevice = device;
-    return callback(true);
+    // 4. Reject — unpaired remote, or loopback trust disabled.
+    return callback(false, 401, 'unpaired');
   };
 }
 
-module.exports = { makeVerifyClient, readDeviceToken };
+module.exports = {
+  makeVerifyClient,
+  readDeviceToken,
+  isLoopbackAddress,
+  isLoopbackReq,
+  LOOPBACK_DEVICE,
+};

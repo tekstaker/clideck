@@ -68,10 +68,12 @@ async function waitForAppReady(page) {
   ).toEqual(expect.arrayContaining(['config', 'sessions', 'presets']));
 }
 
+const { e2eDataDir } = require('./paths');
 function dataDirFromEnv() {
-  if (process.env.CLIDECK_DATA_DIR) return process.env.CLIDECK_DATA_DIR;
-  const home = process.env.HOME || process.env.USERPROFILE;
-  return join(home, '.clideck');
+  // Deterministic shared path (e2e/paths.js) — identical in the server's
+  // process and this worker, so bootstrap.otp is read where the server wrote
+  // it. CLIDECK_DATA_DIR override wins if a real shell sets it. (2026-06-09)
+  return process.env.CLIDECK_DATA_DIR || e2eDataDir();
 }
 
 async function pairBootstrap(page) {
@@ -110,9 +112,16 @@ test.describe('revoke flow — Settings → Linked devices → Revoke (AC5, AC6,
     await pairBootstrap(page);
 
     // Open Settings → Linked devices.
-    await page.locator('#btn-settings, [data-action="settings"]').first().click();
+    await page.locator('#rail-settings').click();
     await page.locator('[data-cat="devices"]').click();
     await expect(page.locator('#settings-devices')).toBeVisible();
+
+    // Wait for the server's REAL device.list to land first. 16-07 shipped the
+    // live broadcast (handlers send it on WS handshake), so if we inject our
+    // synthetic list before the real one arrives, the real render lands AFTER
+    // our injection and detaches the row we're about to click — a DOM-detach
+    // flake. Waiting here makes our injection the LAST render. (2026-06-09)
+    await expect(page.locator('#settings-devices [data-device-id]').first()).toBeVisible();
 
     // Inject a synthetic device.list that adds a second device. The real
     // server broadcast lands in Wave 3 plan 16-07; this spec proves the
@@ -155,7 +164,7 @@ test.describe('revoke flow — Settings → Linked devices → Revoke (AC5, AC6,
     await installWsRecorder(page);
     await pairBootstrap(page);
 
-    await page.locator('#btn-settings, [data-action="settings"]').first().click();
+    await page.locator('#rail-settings').click();
     await page.locator('[data-cat="devices"]').click();
     await expect(page.locator('#settings-devices')).toBeVisible();
 

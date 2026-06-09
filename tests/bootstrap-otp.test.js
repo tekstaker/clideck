@@ -76,16 +76,16 @@ afterEach(() => {
   try { rmSync(TEST_DATA_DIR, { recursive: true, force: true }); } catch {}
 });
 
-describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
-  it('on empty devices.json: writes 6-char OTP to ${DATA_DIR}/bootstrap.otp and logs the bootstrap pair code banner to stdout', () => {
+describe('announcePairCode() — always-visible pair code (AC7, D-02 + 2026-06-09 localhost-trust)', () => {
+  it('on empty devices.json: writes 6-char OTP to ${DATA_DIR}/bootstrap.otp and logs the pair code banner to stdout', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     expect(devices.isEmpty()).toBe(true);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     // Banner present
     const bannerCall = logSpy.mock.calls.find(call =>
-      call.some(a => typeof a === 'string' && /bootstrap pair code/.test(a))
+      call.some(a => typeof a === 'string' && /pair code/.test(a))
     );
     expect(bannerCall).toBeTruthy();
     // File present
@@ -94,25 +94,45 @@ describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
     expect(fileOtp).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/);
   });
 
-  it('when devices has ≥1 device: no file written, no banner logged', () => {
+  // CHANGED 2026-06-09: previously a no-op once any device was paired. Lance
+  // needs the code visible regardless so he can pair ADDITIONAL devices from
+  // his terminal — so announcePairCode() now always mints + prints + writes,
+  // whether devices.json is empty or not.
+  it('with ≥1 device already paired: STILL writes the file and logs the banner (always-visible)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     devices.add({ label: 'Existing', uaFingerprint: 'ua', rawToken: syntheticToken() });
     expect(devices.isEmpty()).toBe(false);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const bannerCall = logSpy.mock.calls.find(call =>
-      call.some(a => typeof a === 'string' && /bootstrap pair code/.test(a))
+      call.some(a => typeof a === 'string' && /pair code/.test(a))
     );
-    expect(bannerCall).toBeUndefined();
-    expect(existsSync(devices.BOOTSTRAP_PATH)).toBe(false);
+    expect(bannerCall).toBeTruthy();
+    expect(existsSync(devices.BOOTSTRAP_PATH)).toBe(true);
+  });
+
+  // CHANGED 2026-06-09: the host pair code is REUSABLE — Lance pairs multiple
+  // devices from the one code printed in his terminal (explicit request +
+  // security waiver: the code is only visible to whoever has the host shell).
+  // User-minted OTPs (Settings → Add device) stay single-use; see pair-otp.test.js.
+  it('the bootstrap/host code is REUSABLE: redeems ok more than once', () => {
+    const { devices, pairOtp } = freshBoot();
+    devices.load();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    pairOtp.announcePairCode();
+    const otp = readFileSync(devices.BOOTSTRAP_PATH, 'utf8').trim();
+    const first = pairOtp.redeemOtp(otp);
+    const second = pairOtp.redeemOtp(otp);
+    expect(first).toEqual(expect.objectContaining({ ok: true, isBootstrap: true }));
+    expect(second).toEqual(expect.objectContaining({ ok: true, isBootstrap: true }));
   });
 
   it('the OTP in bootstrap.otp matches the OTP visible in the captured console.log banner (same value)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const fromBanner = extractOtpFromCalls(logSpy.mock.calls);
     const fromFile = readFileSync(devices.BOOTSTRAP_PATH, 'utf8').trim();
     expect(fromBanner).toBeTruthy();
@@ -123,7 +143,7 @@ describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const raw = readFileSync(devices.BOOTSTRAP_PATH, 'utf8');
     expect(raw).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}\n$/);
   });
@@ -132,7 +152,7 @@ describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const otp = readFileSync(devices.BOOTSTRAP_PATH, 'utf8').trim();
     const res = pairOtp.redeemOtp(otp);
     expect(res).toEqual(expect.objectContaining({ ok: true, isBootstrap: true }));
@@ -145,7 +165,7 @@ describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const otp = readFileSync(devices.BOOTSTRAP_PATH, 'utf8').trim();
     vi.advanceTimersByTime(6 * 60 * 60 * 1000); // 6 hours
     const res = pairOtp.redeemOtp(otp);
@@ -156,7 +176,7 @@ describe('bootstrapIfNeeded() — empty devices.json path (AC7, D-02)', () => {
     const { devices, pairOtp } = freshBoot();
     devices.load();
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    pairOtp.bootstrapIfNeeded();
+    pairOtp.announcePairCode();
     const bootstrapOtp = readFileSync(devices.BOOTSTRAP_PATH, 'utf8').trim();
     const { otp: userOtp } = pairOtp.mintOtp();
     const bootstrapRes = pairOtp.redeemOtp(bootstrapOtp);

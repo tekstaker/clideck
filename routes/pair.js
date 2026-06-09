@@ -156,13 +156,11 @@ function handleRedeemHttp(req, res, { devices, pairOtp }) {
       : null;
     const record = devices.add({ label: sanitisedLabel, uaFingerprint, rawToken });
 
-    // Bootstrap close-out: if this was the bootstrap OTP, delete the
-    // recovery file on disk. The OTP itself is already marked `used` in the
-    // pair-otp store so it can't be redeemed twice anyway; deleting the
-    // file removes the lingering credential on the filesystem.
-    if (result.isBootstrap) {
-      devices.clearBootstrap();
-    }
+    // CHANGED 2026-06-09: the host/bootstrap code is REUSABLE — do NOT delete
+    // .clideck/bootstrap.otp on redeem. Lance pairs multiple devices from the
+    // one code printed in his terminal; clearing it after the first pair would
+    // defeat that. The code is bounded by its 24h TTL and re-minted on each
+    // boot. (devices.clearBootstrap() is retained for explicit/future use.)
 
     // Per CLAUDE.md §13: rawToken appears here in the response body and
     // NOWHERE ELSE. Do not console.log this object, do not log the token
