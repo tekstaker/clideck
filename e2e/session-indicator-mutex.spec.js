@@ -223,4 +223,77 @@ test.describe('session indicator mutex', () => {
     await dispatchSessionStatus(page, a, true);
     expect(await isDotHidden(page, a)).toBe(true);
   });
+
+  // Phase 15 R5 extension — the new `.other-client-indicator` slot must NOT
+  // collide with the existing Phase 5 unread-dot / working-status mutex.
+  //
+  // SPEC R5 + UI-SPEC ("Other-client indicator — exact contract" / "Position
+  // on the session row"): the indicator lives in the TOP row of the
+  // session-row template (sibling of `.session-time`, inside
+  // `<div class="flex items-baseline gap-2">` at terminals.js:720) — NOT in
+  // the bottom row that hosts `.unread-dot` and `.session-status`.
+  //
+  // That placement is the entire Phase 5 mutex-preserving contract. This
+  // test pins it so a future refactor of the row template can't quietly
+  // move the indicator into the bottom row and re-introduce the visual
+  // fight Phase 5 spent a phase eliminating.
+  //
+  // RED-state today: `.other-client-indicator` doesn't exist in the row
+  // template yet (Plan 05 adds the markup), so the "indicator-in-top-row"
+  // locator has count 0. After Plan 05 this passes; the inverse "must NOT
+  // appear in the bottom row" assertion always passes (zero either way),
+  // which still locks the placement contract.
+  test('R5 — .other-client-indicator slot does not collide with unread-dot / session-status', async ({ page }) => {
+    await installWsRecorder(page);
+    await page.goto('/');
+    await waitForAppReady(page);
+
+    const a = await spawnSession(page);
+
+    // Simulate the indicator being "on" via direct DOM toggle. We can't
+    // dispatch a synthetic `{type:'clients.count'}` MessageEvent that
+    // round-trips through the app's WS handler (the client's onmessage
+    // is bound, not the dispatched listener), but we can flip the flag
+    // and remove `.hidden` from every indicator span — the same
+    // observable state that `updateOtherClientIndicator(2)` produces.
+    await page.evaluate(async () => {
+      try {
+        const { state } = await import('/js/state.js');
+        state.otherClientsConnected = true;
+      } catch {}
+      for (const el of document.querySelectorAll('.other-client-indicator')) {
+        el.classList.remove('hidden');
+      }
+    });
+
+    // Top-row slot — the row template at terminals.js:720 puts the
+    // indicator inside `<div class="flex items-baseline gap-2">` (same
+    // parent as `.session-time`). Asserting via the `.session-time` sibling
+    // proves the placement without hard-coding child-index brittleness.
+    const indicatorInTopRow = await page.evaluate((id) => {
+      const row = document.querySelector(`.group[data-id="${id}"]`);
+      if (!row) return null;
+      const sessionTime = row.querySelector('.session-time');
+      if (!sessionTime) return null;
+      const indicator = sessionTime.parentElement.querySelector('.other-client-indicator');
+      return indicator ? 1 : 0;
+    }, a);
+    expect(indicatorInTopRow).toBe(1);
+
+    // Bottom-row slot — the row at terminals.js:724 (the
+    // `<div class="flex items-center gap-1 mt-0.5">` that hosts
+    // `.session-status`, `.session-preview`, `.unread-dot`, `.menu-btn`)
+    // MUST NOT contain the indicator. If a future refactor moved the
+    // indicator into this row, the Phase 5 mutex contract would silently
+    // regress.
+    const indicatorInBottomRow = await page.evaluate((id) => {
+      const row = document.querySelector(`.group[data-id="${id}"]`);
+      if (!row) return null;
+      const unreadDot = row.querySelector('.unread-dot');
+      if (!unreadDot) return null;
+      const indicator = unreadDot.parentElement.querySelector('.other-client-indicator');
+      return indicator ? 1 : 0;
+    }, a);
+    expect(indicatorInBottomRow).toBe(0);
+  });
 });
