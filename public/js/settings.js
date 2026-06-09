@@ -255,8 +255,6 @@ export function setFontSize(px) {
 export function updateVersionFooter() {
   const el = document.getElementById('version-clideck');
   if (el) el.textContent = state.cfg.version || '';
-  const remoteEl = document.getElementById('version-remote');
-  if (remoteEl) remoteEl.textContent = state.remoteVersion || '';
   // The lower-left build tag is now part of the connection lozenge
   // (see app.js setStatusBadge). Just nudge it to re-render with the
   // freshest version string.

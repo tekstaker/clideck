@@ -10,7 +10,6 @@ export const state = {
   pills: new Map(),
   activePill: null,
   transcriptCache: {},
-  remoteVersion: null,
   // Phase 16 — paired device IDs/labels list, populated by the `device.list`
   // broadcast (handlers.js arm landed in 16-05; Settings panel render lands
   // in 16-07). Each entry shape: { id, label, fingerprint, paired_at,
