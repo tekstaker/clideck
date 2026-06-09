@@ -124,6 +124,18 @@
       #settings-overlay .settings-panel { padding: 4.5rem 1rem 1.5rem; max-width: none; }
       #folder-picker { padding: 1rem; }
       #folder-picker > div { width: 100%; max-width: 420px; }
+      /* Phase 15 R6 (D-16): when the locked PTY width exceeds a phone-sized
+         viewport, the terminal wrapper scrolls horizontally instead of
+         reshaping the PTY. xterm's own .xterm element sits inside .term-wrap
+         and keeps its locked width — overflow-x:auto on the wrapper gives
+         the user a touch-scrollable view without breaking the Phase 9
+         display-sizing math. SINGLE rule, inside the existing 960px block —
+         NO new ≤480px breakpoint tier per UI-SPEC § "Phone-viewport
+         responsive contract → Terminal pane overflow — LOCKED decision". */
+      .term-wrap {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
     }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
